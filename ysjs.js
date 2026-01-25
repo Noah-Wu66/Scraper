@@ -1327,7 +1327,7 @@
         ].join(';');
 
         const title = document.createElement('div');
-        title.textContent = '微博采集面板';
+        title.textContent = '数据采集面板';
         title.style.cssText = 'font-weight:bold;margin-bottom:8px;font-size:13px;';
 
         const status = document.createElement('div');
@@ -1496,14 +1496,18 @@
         const topicStatus = state.topic.running ? `采集中 ${state.topic.idx + 1}/${state.topic.topics.length}` : '空闲';
         const videoStatus = state.video.running ? '采集中' : '空闲';
         const cctvStatus = state.cctv.running ? `采集中 ${state.cctv.idx + 1}/${state.cctv.vids.length}` : '空闲';
+        const topicLabel = '微博话题&热搜';
+        const videoLabel = '微博视频数据';
+        const cctvLabel = '央视频数据';
+        const wechatLabel = '公众号数据';
         panelRefs.status.innerHTML = [
-            `话题：${topicStatus}`,
-            `话题数据：${topicCount} 条`,
-            `视频：${videoStatus}`,
-            `视频数据：${videoCount} 条`,
-            `央视频：${cctvStatus}`,
-            `央视频数据：${cctvCount} 条`,
-            `微信数据：${wechatCount} 条`
+            `${topicLabel}：${topicStatus}`,
+            `${topicLabel}数据：${topicCount} 条`,
+            `${videoLabel}：${videoStatus}`,
+            `${videoLabel}条数：${videoCount} 条`,
+            `${cctvLabel}：${cctvStatus}`,
+            `${cctvLabel}条数：${cctvCount} 条`,
+            `${wechatLabel}：${wechatCount} 条`
         ].join('<br>');
 
         panelRefs.btnAuto.textContent = state.auto.active ? '一键采集中' : '一键采集';
