@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博话题&视频采集器（合并版）
 // @namespace    http://tampermonkey.net/
-// @version      1.1.2
+// @version      1.1.4
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -1581,9 +1581,6 @@
             if (action === 'video') startVideoCollect();
         }, 600);
     })();
-    if (loadState().topic.running && isOnDetailPage()) {
-        runTopicDetailStep();
-    }
     if (isOnCctvListPage()) {
         runCctvListStep();
     }
