@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         微博话题&视频采集器（合并版）
+// @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.1.5
+// @version      1.1.7
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -77,6 +77,14 @@
                 vids: [],
                 results: []
             },
+            auto: {
+                active: false,
+                index: 0,
+                current: '',
+                started: false,
+                waitUntil: 0,
+                wechatDone: false
+            },
             overviewRange: DEFAULT_OVERVIEW_RANGE,
             collectRangeStart: range.startValue,
             collectRangeEnd: range.endValue
@@ -126,7 +134,8 @@
             topic: { ...base.topic, ...(data.topic || {}) },
             video: { ...base.video, ...(data.video || {}) },
             wechat: { ...base.wechat, ...(data.wechat || {}) },
-            cctv: { ...base.cctv, ...(data.cctv || {}) }
+            cctv: { ...base.cctv, ...(data.cctv || {}) },
+            auto: { ...base.auto, ...(data.auto || {}) }
         };
         state.overviewRange = data.overviewRange || base.overviewRange;
         const range = normalizeCollectRange(data.collectRangeStart, data.collectRangeEnd);
@@ -1082,7 +1091,12 @@
                 const results = buildWechatRowsFromCsv(text);
                 const state = loadState();
                 state.wechat.results = results;
-                saveState(state);
+                if (state.auto.active && state.auto.current === 'wechat') {
+                    state.auto.wechatDone = true;
+                    saveState(state);
+                } else {
+                    saveState(state);
+                }
                 showToast(`微信导入完成：${results.length}条`);
             } catch (e) {
                 console.error('微信CSV解析失败', e);
@@ -1209,16 +1223,36 @@
         xml += '<Row>';
         topicHeaders.forEach(h => { xml += `<Cell><Data ss:Type="String">${escapeXml(h)}</Data></Cell>`; });
         xml += '</Row>\n';
-        (topicResults || []).forEach(row => {
+        const topicRows = Array.isArray(topicResults) ? [...topicResults] : [];
+        const getTopicRead = (row) => {
+            const val = row && row['话题阅读量'];
+            if (typeof val === 'number' && Number.isFinite(val)) return val;
+            const num = Number(val);
+            return Number.isFinite(num) ? num : 0;
+        };
+        topicRows.sort((a, b) => getTopicRead(b) - getTopicRead(a));
+        const topicReadTotal = topicRows.reduce((sum, row) => sum + getTopicRead(row), 0);
+        topicRows.forEach((row, idx) => {
             xml += '<Row>';
             topicHeaders.forEach(h => {
-                const val = row[h] || '';
+                let val = row[h] || '';
+                if (h === '序号') val = idx + 1;
                 const isNum = typeof val === 'number' && Number.isFinite(val);
                 const type = isNum ? 'Number' : 'String';
                 xml += `<Cell><Data ss:Type="${type}">${escapeXml(val)}</Data></Cell>`;
             });
             xml += '</Row>\n';
         });
+        xml += '<Row>';
+        topicHeaders.forEach(h => {
+            let val = '';
+            if (h === '序号') val = '总计';
+            if (h === '话题阅读量') val = topicReadTotal;
+            const isNum = typeof val === 'number' && Number.isFinite(val);
+            const type = isNum ? 'Number' : 'String';
+            xml += `<Cell><Data ss:Type="${type}">${escapeXml(val)}</Data></Cell>`;
+        });
+        xml += '</Row>\n';
         xml += '</Table></Worksheet>\n';
 
         // Sheet 5: 热搜
@@ -1311,12 +1345,15 @@
         const rangeEndLabel = document.createElement('span');
         const rangeEndInput = document.createElement('input');
 
-        const btnTopic = document.createElement('button');
+        const btnAuto = document.createElement('button');
+        const actionToggle = document.createElement('button');
+        const actionGroup = document.createElement('div');
         const btnVideo = document.createElement('button');
+        const btnTopic = document.createElement('button');
         const btnCctv = document.createElement('button');
         const btnWechat = document.createElement('button');
-        const btnExport = document.createElement('button');
         const btnClear = document.createElement('button');
+        const btnExport = document.createElement('button');
 
         const btnStyle = [
             'width: 100%',
@@ -1356,12 +1393,15 @@
         rangeEndInput.type = 'datetime-local';
         rangeEndInput.style.cssText = 'flex:1;min-width:0;padding:4px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px;';
 
-        btnTopic.style.cssText = `${btnStyle};background:#9b59b6;color:#fff;`;
+        btnAuto.style.cssText = `${btnStyle};background:#f39c12;color:#fff;`;
+        actionToggle.style.cssText = `${btnStyle};background:#34495e;color:#fff;`;
+        actionGroup.style.cssText = 'display:none;';
         btnVideo.style.cssText = `${btnStyle};background:#ff6b35;color:#fff;`;
+        btnTopic.style.cssText = `${btnStyle};background:#9b59b6;color:#fff;`;
         btnCctv.style.cssText = `${btnStyle};background:#2d98da;color:#fff;`;
         btnWechat.style.cssText = `${btnStyle};background:#16a085;color:#fff;`;
-        btnExport.style.cssText = `${btnStyle};background:#27ae60;color:#fff;`;
         btnClear.style.cssText = `${btnStyle};background:#666;color:#fff;`;
+        btnExport.style.cssText = `${btnStyle};background:#27ae60;color:#fff;`;
 
         rangeSelect.onchange = () => {
             const state = loadState();
@@ -1388,11 +1428,11 @@
         rangeStartInput.onchange = saveCollectRange;
         rangeEndInput.onchange = saveCollectRange;
 
-        btnTopic.onclick = onTopicToggleClick;
+        btnAuto.onclick = onAutoCollectClick;
         btnVideo.onclick = onVideoToggleClick;
+        btnTopic.onclick = onTopicToggleClick;
         btnCctv.onclick = onCctvToggleClick;
         btnWechat.onclick = onWechatImportClick;
-        btnExport.onclick = exportWorkbook;
         btnClear.onclick = () => {
             if (!confirm('确定清空全部数据？（数据周期、采集区间不会清空）')) return;
             const prev = loadState();
@@ -1403,9 +1443,12 @@
             saveState(next);
             showToast('已清空（保留数据周期、采集区间）');
         };
-        btnExport.textContent = '导出表格';
-        btnClear.textContent = '清空数据';
+        btnExport.onclick = exportWorkbook;
+        btnAuto.textContent = '一键采集';
+        actionToggle.textContent = '展开采集功能';
+        btnClear.textContent = '清除数据';
         btnWechat.textContent = '公众号数据';
+        btnExport.textContent = '导出表格';
 
         wrap.appendChild(title);
         wrap.appendChild(status);
@@ -1420,16 +1463,25 @@
         rangeEndRow.appendChild(rangeEndInput);
         wrap.appendChild(rangeStartRow);
         wrap.appendChild(rangeEndRow);
-        wrap.appendChild(btnTopic);
-        wrap.appendChild(btnVideo);
-        wrap.appendChild(btnCctv);
-        wrap.appendChild(btnWechat);
-        wrap.appendChild(btnExport);
+        actionToggle.onclick = () => {
+            const isOpen = actionGroup.style.display !== 'none';
+            actionGroup.style.display = isOpen ? 'none' : 'block';
+            actionToggle.textContent = isOpen ? '展开采集功能' : '收起采集功能';
+        };
+
+        wrap.appendChild(btnAuto);
+        wrap.appendChild(actionToggle);
+        actionGroup.appendChild(btnVideo);
+        actionGroup.appendChild(btnTopic);
+        actionGroup.appendChild(btnCctv);
+        actionGroup.appendChild(btnWechat);
+        wrap.appendChild(actionGroup);
         wrap.appendChild(btnClear);
+        wrap.appendChild(btnExport);
         shadow.appendChild(wrap);
         document.body.appendChild(container);
 
-        panelRefs = { status, btnTopic, btnVideo, btnCctv, btnWechat, rangeSelect, rangeStartInput, rangeEndInput, shadow };
+        panelRefs = { status, btnAuto, btnVideo, btnTopic, btnCctv, btnWechat, rangeSelect, rangeStartInput, rangeEndInput, shadow };
         refreshPanel();
         setInterval(refreshPanel, 1000);
     }
@@ -1454,8 +1506,9 @@
             `微信数据：${wechatCount} 条`
         ].join('<br>');
 
-        panelRefs.btnTopic.textContent = state.topic.running ? '停止采集话题' : '微博话题&热搜';
+        panelRefs.btnAuto.textContent = state.auto.active ? '一键采集中' : '一键采集';
         panelRefs.btnVideo.textContent = state.video.running ? '停止采集视频' : '微博视频数据';
+        panelRefs.btnTopic.textContent = state.topic.running ? '停止采集话题' : '微博话题&热搜';
         panelRefs.btnCctv.textContent = state.cctv.running ? '停止采集央视频' : '央视频数据';
         if (panelRefs.shadow.activeElement !== panelRefs.rangeSelect) {
             panelRefs.rangeSelect.value = state.overviewRange || DEFAULT_OVERVIEW_RANGE;
@@ -1465,6 +1518,91 @@
         }
         if (panelRefs.shadow.activeElement !== panelRefs.rangeEndInput) {
             panelRefs.rangeEndInput.value = state.collectRangeEnd || buildDefaultCollectRange().endValue;
+        }
+        runAutoSequenceTick(state);
+    }
+
+    const AUTO_SEQUENCE = ['video', 'topic', 'cctv', 'wechat'];
+    const AUTO_WAIT_MS = 5000;
+
+    function isActionRunning(action, state) {
+        if (action === 'video') return !!state.video.running;
+        if (action === 'topic') return !!state.topic.running;
+        if (action === 'cctv') return !!state.cctv.running;
+        return false;
+    }
+
+    function startAutoAction(action) {
+        if (action === 'video') {
+            queueStartAndGotoTop('video');
+            return;
+        }
+        if (action === 'topic') {
+            queueStartAndGotoTop('topic');
+            return;
+        }
+        if (action === 'cctv') {
+            onCctvToggleClick();
+            return;
+        }
+        if (action === 'wechat') {
+            onWechatImportClick();
+        }
+    }
+
+    function advanceAutoStep(state) {
+        state.auto.index += 1;
+        state.auto.current = '';
+        state.auto.started = false;
+        state.auto.wechatDone = false;
+        state.auto.waitUntil = Date.now() + AUTO_WAIT_MS;
+        saveState(state);
+    }
+
+    function runAutoSequenceTick(state) {
+        if (!state.auto.active) return;
+        if (state.auto.waitUntil && Date.now() < state.auto.waitUntil) return;
+
+        if (!state.auto.current) {
+            state.auto.current = AUTO_SEQUENCE[state.auto.index] || '';
+            state.auto.started = false;
+            state.auto.wechatDone = false;
+            saveState(state);
+        }
+
+        if (!state.auto.current) {
+            state.auto.active = false;
+            state.auto.started = false;
+            state.auto.waitUntil = 0;
+            saveState(state);
+            showToast('一键采集完成');
+            return;
+        }
+
+        if (!state.auto.started) {
+            if (isActionRunning(state.auto.current, state)) {
+                state.auto.started = true;
+                saveState(state);
+                return;
+            }
+            if (state.auto.current === 'wechat') {
+                state.auto.wechatDone = false;
+            }
+            state.auto.started = true;
+            saveState(state);
+            startAutoAction(state.auto.current);
+            return;
+        }
+
+        if (state.auto.current === 'wechat') {
+            if (state.auto.wechatDone) {
+                advanceAutoStep(state);
+            }
+            return;
+        }
+
+        if (!isActionRunning(state.auto.current, state)) {
+            advanceAutoStep(state);
         }
     }
 
@@ -1532,6 +1670,29 @@
             return;
         }
         queueStartAndGotoTop('video');
+    }
+
+    function onAutoCollectClick() {
+        const state = loadState();
+        if (state.auto.active) {
+            state.auto.active = false;
+            state.auto.index = 0;
+            state.auto.current = '';
+            state.auto.started = false;
+            state.auto.waitUntil = 0;
+            state.auto.wechatDone = false;
+            saveState(state);
+            showToast('已停止一键采集');
+            return;
+        }
+        state.auto.active = true;
+        state.auto.index = 0;
+        state.auto.current = '';
+        state.auto.started = false;
+        state.auto.waitUntil = 0;
+        state.auto.wechatDone = false;
+        saveState(state);
+        showToast('一键采集已开始');
     }
 
     function onCctvToggleClick() {
