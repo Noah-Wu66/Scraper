@@ -17,7 +17,6 @@
     'use strict';
 
     const STORAGE_KEY = '__weibo_scraper_hub_v1';
-    const MAX_TOPICS = 120;
     const SCROLL_WAIT_MS = 1500;
     const NO_NEW_RETRY_LIMIT = 6;
     const DEFAULT_DAYS_LIMIT = 7;
@@ -216,42 +215,54 @@
 
     function findAllTopicsInPage(state) {
         const set = new Set();
+        let reachedLimit = false;
         const cards = Array.from(document.querySelectorAll('.card'));
         for (const card of cards) {
+            if (card.dataset.topicScanned) continue;
             const timeEl = card.querySelector('.time');
             const timeStr = timeEl ? timeEl.textContent.trim() : '';
-            if (!timeStr) continue;
-            if (!isWithinDays(timeStr, state.daysLimit || DEFAULT_DAYS_LIMIT)) continue;
+            if (timeStr && !isWithinDays(timeStr, state.daysLimit || DEFAULT_DAYS_LIMIT)) {
+                reachedLimit = true;
+                card.dataset.topicScanned = 'true';
+                continue;
+            }
+            if (!timeStr) {
+                card.dataset.topicScanned = 'true';
+                continue;
+            }
             collectTopicsFromNode(card, set);
+            card.dataset.topicScanned = 'true';
         }
-        return Array.from(set);
+        return { topics: Array.from(set), reachedLimit };
     }
 
     async function scrollAndCollectTopics(state) {
         state.topic.step = 'collecting';
         saveState(state);
 
-        let lastCount = 0;
-        let noNew = 0;
+        let lastCardCount = 0;
+        let lastHeight = 0;
+        let noGrow = 0;
 
         while (state.topic.running) {
             await waitForVerificationClear();
-            const found = findAllTopicsInPage(state);
-            for (const name of found) {
+            const scan = findAllTopicsInPage(state);
+            for (const name of scan.topics) {
                 if (state.topic.topics.includes(name)) continue;
                 state.topic.topics.push(name);
             }
-            if (state.topic.topics.length > MAX_TOPICS) {
-                state.topic.topics = state.topic.topics.slice(0, MAX_TOPICS);
-            }
             saveState(state);
 
-            if (state.topic.topics.length === lastCount) noNew += 1;
-            else noNew = 0;
-            lastCount = state.topic.topics.length;
+            if (scan.reachedLimit) break;
 
-            if (state.topic.topics.length >= MAX_TOPICS) break;
-            if (noNew >= NO_NEW_RETRY_LIMIT) break;
+            const cardCount = document.querySelectorAll('.card').length;
+            const height = document.body.scrollHeight;
+            if (cardCount === lastCardCount && height === lastHeight) noGrow += 1;
+            else noGrow = 0;
+            lastCardCount = cardCount;
+            lastHeight = height;
+
+            if (noGrow >= NO_NEW_RETRY_LIMIT) break;
 
             window.scrollTo(0, document.body.scrollHeight);
             await sleep(SCROLL_WAIT_MS);
