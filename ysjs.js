@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.1.7
+// @version      1.1.9
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -10,6 +10,7 @@
 // @match        https://yangshipin.cn/*
 // @updateURL    https://raw.githubusercontent.com/Noah-Wu66/Scraper/main/ysjs.js
 // @downloadURL  https://raw.githubusercontent.com/Noah-Wu66/Scraper/main/ysjs.js
+// @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
@@ -1140,28 +1141,19 @@
         return reindexResults(filtered);
     }
 
-    // ===== 导出表格（仅改名，不改结构：多Sheet）=====
-    function buildWorkbookXml(topicResults, videoResults, cctvResults, wechatResults) {
+    // ===== 导出表格（xlsx，多Sheet）=====
+    function buildWorkbookXlsx(topicResults, videoResults, cctvResults, wechatResults) {
         const wechatHeaders = ['序号', '标题', '链接', '发布时间', '阅读量', '点赞量', '在看量'];
         const videoHeaders = ['序号', '标题', '链接', '发布时间', '转发量', '点赞量', '评论量', '视频播放量'];
         const topicHeaders = ['序号', '话题名称', '话题主持人', '话题阅读量', '话题讨论量'];
         const hotHeaders = ['序号', '热搜标题', '最高排名', '话题主持人', '话题阅读量'];
         const cctvHeaders = ['序号', '标题', '链接', '发布时间', '播放量', '点赞量'];
 
-        let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
-        xml += '<?mso-application progid="Excel.Sheet"?>\n';
-        xml += '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"\n';
-        xml += '  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">\n';
+        const wb = XLSX.utils.book_new();
 
-        // Sheet 1: 微信
-        xml += '<Worksheet ss:Name="微信"><Table>\n';
-        xml += '<Row>';
-        wechatHeaders.forEach(h => { xml += `<Cell><Data ss:Type="String">${escapeXml(h)}</Data></Cell>`; });
-        xml += '</Row>\n';
         const wechatNumFields = ['序号', '阅读量', '点赞量', '在看量'];
-        (wechatResults || []).forEach(item => {
-            xml += '<Row>';
-            wechatHeaders.forEach(h => {
+        const wechatRows = (wechatResults || []).map((item) => (
+            wechatHeaders.map((h) => {
                 let val = item[h];
                 const isNumField = wechatNumFields.includes(h);
                 if (isNumField) {
@@ -1169,23 +1161,14 @@
                 } else {
                     val = val || '';
                 }
-                const isNum = typeof val === 'number' && Number.isFinite(val);
-                const type = isNum ? 'Number' : 'String';
-                xml += `<Cell><Data ss:Type="${type}">${escapeXml(val)}</Data></Cell>`;
-            });
-            xml += '</Row>\n';
-        });
-        xml += '</Table></Worksheet>\n';
+                return (typeof val === 'number' && Number.isFinite(val)) ? val : String(val);
+            })
+        ));
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([wechatHeaders, ...wechatRows]), '微信');
 
-        // Sheet 2: 央视频
-        xml += '<Worksheet ss:Name="央视频"><Table>\n';
-        xml += '<Row>';
-        cctvHeaders.forEach(h => { xml += `<Cell><Data ss:Type="String">${escapeXml(h)}</Data></Cell>`; });
-        xml += '</Row>\n';
         const cctvNumFields = ['序号', '播放量', '点赞量'];
-        (cctvResults || []).forEach(item => {
-            xml += '<Row>';
-            cctvHeaders.forEach(h => {
+        const cctvRows = (cctvResults || []).map((item) => (
+            cctvHeaders.map((h) => {
                 let val = item[h];
                 const isNumField = cctvNumFields.includes(h);
                 if (isNumField) {
@@ -1193,36 +1176,19 @@
                 } else {
                     val = val || '';
                 }
-                const isNum = typeof val === 'number' && Number.isFinite(val);
-                const type = isNum ? 'Number' : 'String';
-                xml += `<Cell><Data ss:Type="${type}">${escapeXml(val)}</Data></Cell>`;
-            });
-            xml += '</Row>\n';
-        });
-        xml += '</Table></Worksheet>\n';
+                return (typeof val === 'number' && Number.isFinite(val)) ? val : String(val);
+            })
+        ));
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([cctvHeaders, ...cctvRows]), '央视频');
 
-        // Sheet 3: 微博
-        xml += '<Worksheet ss:Name="微博"><Table>\n';
-        xml += '<Row>';
-        videoHeaders.forEach(h => { xml += `<Cell><Data ss:Type="String">${escapeXml(h)}</Data></Cell>`; });
-        xml += '</Row>\n';
-        (videoResults || []).forEach(item => {
-            xml += '<Row>';
-            videoHeaders.forEach(h => {
+        const videoRows = (videoResults || []).map((item) => (
+            videoHeaders.map((h) => {
                 const val = item[h] || '';
-                const isNum = typeof val === 'number' && Number.isFinite(val);
-                const type = isNum ? 'Number' : 'String';
-                xml += `<Cell><Data ss:Type="${type}">${escapeXml(val)}</Data></Cell>`;
-            });
-            xml += '</Row>\n';
-        });
-        xml += '</Table></Worksheet>\n';
+                return (typeof val === 'number' && Number.isFinite(val)) ? val : String(val);
+            })
+        ));
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([videoHeaders, ...videoRows]), '微博');
 
-        // Sheet 4: 微博话题
-        xml += '<Worksheet ss:Name="微博话题"><Table>\n';
-        xml += '<Row>';
-        topicHeaders.forEach(h => { xml += `<Cell><Data ss:Type="String">${escapeXml(h)}</Data></Cell>`; });
-        xml += '</Row>\n';
         const topicRows = Array.isArray(topicResults) ? [...topicResults] : [];
         const getTopicRead = (row) => {
             const val = row && row['话题阅读量'];
@@ -1232,37 +1198,26 @@
         };
         topicRows.sort((a, b) => getTopicRead(b) - getTopicRead(a));
         const topicReadTotal = topicRows.reduce((sum, row) => sum + getTopicRead(row), 0);
-        topicRows.forEach((row, idx) => {
-            xml += '<Row>';
-            topicHeaders.forEach(h => {
+        const topicDataRows = topicRows.map((row, idx) => (
+            topicHeaders.map((h) => {
                 let val = row[h] || '';
                 if (h === '序号') val = idx + 1;
-                const isNum = typeof val === 'number' && Number.isFinite(val);
-                const type = isNum ? 'Number' : 'String';
-                xml += `<Cell><Data ss:Type="${type}">${escapeXml(val)}</Data></Cell>`;
-            });
-            xml += '</Row>\n';
+                return (typeof val === 'number' && Number.isFinite(val)) ? val : String(val);
+            })
+        ));
+        const topicTotalRow = topicHeaders.map((h) => {
+            if (h === '序号') return '总计';
+            if (h === '话题阅读量') return topicReadTotal;
+            return '';
         });
-        xml += '<Row>';
-        topicHeaders.forEach(h => {
-            let val = '';
-            if (h === '序号') val = '总计';
-            if (h === '话题阅读量') val = topicReadTotal;
-            const isNum = typeof val === 'number' && Number.isFinite(val);
-            const type = isNum ? 'Number' : 'String';
-            xml += `<Cell><Data ss:Type="${type}">${escapeXml(val)}</Data></Cell>`;
-        });
-        xml += '</Row>\n';
-        xml += '</Table></Worksheet>\n';
+        XLSX.utils.book_append_sheet(
+            wb,
+            XLSX.utils.aoa_to_sheet([topicHeaders, ...topicDataRows, topicTotalRow]),
+            '微博话题'
+        );
 
-        // Sheet 5: 热搜
-        xml += '<Worksheet ss:Name="热搜"><Table>\n';
-        xml += '<Row>';
-        hotHeaders.forEach(h => { xml += `<Cell><Data ss:Type="String">${escapeXml(h)}</Data></Cell>`; });
-        xml += '</Row>\n';
         let hotIndex = 0;
-        (topicResults || []).forEach((row) => {
-            if (!row['热搜记录']) return;
+        const hotRows = (topicResults || []).filter(row => row && row['热搜记录']).map((row) => {
             hotIndex += 1;
             const hotRow = {
                 序号: hotIndex,
@@ -1271,19 +1226,14 @@
                 话题主持人: row['话题主持人'] || '',
                 话题阅读量: row['话题阅读量'] || ''
             };
-            xml += '<Row>';
-            hotHeaders.forEach(h => {
+            return hotHeaders.map((h) => {
                 const val = hotRow[h] || '';
-                const isNum = typeof val === 'number' && Number.isFinite(val);
-                const type = isNum ? 'Number' : 'String';
-                xml += `<Cell><Data ss:Type="${type}">${escapeXml(val)}</Data></Cell>`;
+                return (typeof val === 'number' && Number.isFinite(val)) ? val : String(val);
             });
-            xml += '</Row>\n';
         });
-        xml += '</Table></Worksheet>\n';
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([hotHeaders, ...hotRows]), '热搜');
 
-        xml += '</Workbook>';
-        return xml;
+        return wb;
     }
 
     function exportWorkbook() {
@@ -1292,12 +1242,13 @@
         const filteredVideo = filterVideoResultsByRange(state.video.results, range);
         const filteredCctv = filterCctvResultsByRange(state.cctv.results, range);
         const filteredWechat = filterWechatResultsByRange(state.wechat.results, range);
-        const xml = buildWorkbookXml(state.topic.results, filteredVideo, filteredCctv, filteredWechat);
-        const blob = new Blob([xml], { type: 'application/vnd.ms-excel' });
+        const wb = buildWorkbookXlsx(state.topic.results, filteredVideo, filteredCctv, filteredWechat);
+        const data = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+        const blob = new Blob([data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `微博采集数据_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}.xls`;
+        a.download = `微博采集数据_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}.xlsx`;
         a.click();
         URL.revokeObjectURL(url);
     }
@@ -1354,6 +1305,10 @@
         const btnWechat = document.createElement('button');
         const btnClear = document.createElement('button');
         const btnExport = document.createElement('button');
+        const footer = document.createElement('div');
+        const footerText = document.createElement('span');
+        const footerLink = document.createElement('a');
+        const footerIcon = document.createElement('span');
 
         const btnStyle = [
             'width: 100%',
@@ -1402,6 +1357,9 @@
         btnWechat.style.cssText = `${btnStyle};background:#16a085;color:#fff;`;
         btnClear.style.cssText = `${btnStyle};background:#666;color:#fff;`;
         btnExport.style.cssText = `${btnStyle};background:#27ae60;color:#fff;`;
+        footer.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:6px;font-size:12px;color:#666;';
+        footerLink.style.cssText = 'display:inline-flex;align-items:center;gap:4px;color:#111;text-decoration:none;';
+        footerIcon.style.cssText = 'width:16px;height:16px;display:inline-block;';
 
         rangeSelect.onchange = () => {
             const state = loadState();
@@ -1449,6 +1407,11 @@
         btnClear.textContent = '清除数据';
         btnWechat.textContent = '公众号数据';
         btnExport.textContent = '导出表格';
+        footerText.textContent = '作者：Noah';
+        footerLink.href = 'https://github.com/Noah-Wu66';
+        footerLink.target = '_blank';
+        footerLink.rel = 'noopener noreferrer';
+        footerIcon.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true" width="16" height="16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"></path></svg>';
 
         wrap.appendChild(title);
         wrap.appendChild(status);
@@ -1478,6 +1441,10 @@
         wrap.appendChild(actionGroup);
         wrap.appendChild(btnClear);
         wrap.appendChild(btnExport);
+        footerLink.appendChild(footerIcon);
+        footer.appendChild(footerText);
+        footer.appendChild(footerLink);
+        wrap.appendChild(footer);
         shadow.appendChild(wrap);
         document.body.appendChild(container);
 
