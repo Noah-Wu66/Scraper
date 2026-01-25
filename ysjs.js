@@ -403,6 +403,47 @@
         }
     }
 
+    async function continueTopicCollectFromUserPage() {
+        let state = loadState();
+        if (!state.topic.running) return;
+        if (!isOnTargetUserPage()) return;
+        state.topic.step = 'collecting';
+        saveState(state);
+        const s = await scrollAndCollectTopics(state);
+        if (s.topic.running && s.topic.topics.length > 0) {
+            location.href = buildDetailUrl(s.topic.topics[s.topic.idx] || s.topic.topics[0]);
+        } else if (s.topic.topics.length === 0) {
+            showToast('没找到话题');
+            const latest = loadState();
+            latest.topic.running = false;
+            saveState(latest);
+        }
+    }
+
+    function resumeTopicIfNeeded() {
+        const state = loadState();
+        if (!state.topic.running) return;
+        if (isOnDetailPage()) {
+            runTopicDetailStep();
+            return;
+        }
+        if (state.topic.topics.length > 0) {
+            if (state.topic.idx >= state.topic.topics.length) {
+                state.topic.running = false;
+                saveState(state);
+                showToast('话题采集已完成');
+                return;
+            }
+            location.href = buildDetailUrl(state.topic.topics[state.topic.idx]);
+            return;
+        }
+        if (isOnTargetUserPage()) {
+            continueTopicCollectFromUserPage();
+            return;
+        }
+        location.href = TARGET_USER_URL;
+    }
+
     // ===== 视频采集逻辑 =====
     function pad(n) { return n < 10 ? '0' + n : n; }
 
@@ -1214,6 +1255,7 @@
         state.topic.idx = 0;
         state.topic.topics = [];
         state.topic.results = [];
+        state.topic.step = 'collecting';
         state.daysLimit = state.daysLimit || DEFAULT_DAYS_LIMIT;
         saveState(state);
         scrollAndCollectTopics(state).then(s => {
@@ -1241,6 +1283,7 @@
         const state = loadState();
         if (state.topic.running) {
             state.topic.running = false;
+            state.topic.step = 'idle';
             saveState(state);
             showToast('已停止话题采集');
             return;
@@ -1298,6 +1341,7 @@
     }
 
     createHubPanel();
+    resumeTopicIfNeeded();
     (function autoStartAfterGoto() {
         const state = loadState();
         if (!state._pendingStart) return;
