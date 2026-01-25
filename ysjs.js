@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         微博话题&视频采集器（合并版）
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1.0
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
 // @match        https://m.s.weibo.com/*
 // @match        https://w.yangshipin.cn/*
 // @match        https://yangshipin.cn/*
+// @updateURL    https://raw.githubusercontent.com/Noah-Wu66/Scraper/main/ysjs.js
+// @downloadURL  https://raw.githubusercontent.com/Noah-Wu66/Scraper/main/ysjs.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
