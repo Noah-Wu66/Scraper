@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博话题&视频采集器（合并版）
 // @namespace    http://tampermonkey.net/
-// @version      1.1.4
+// @version      1.1.5
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -1405,7 +1405,7 @@
         };
         btnExport.textContent = '导出表格';
         btnClear.textContent = '清空数据';
-        btnWechat.textContent = '导入微信CSV';
+        btnWechat.textContent = '公众号数据';
 
         wrap.appendChild(title);
         wrap.appendChild(status);
@@ -1454,9 +1454,9 @@
             `微信数据：${wechatCount} 条`
         ].join('<br>');
 
-        panelRefs.btnTopic.textContent = state.topic.running ? '停止采集话题' : '开始采集话题';
-        panelRefs.btnVideo.textContent = state.video.running ? '停止采集视频' : '开始采集视频';
-        panelRefs.btnCctv.textContent = state.cctv.running ? '停止采集央视频' : '开始采集央视频';
+        panelRefs.btnTopic.textContent = state.topic.running ? '停止采集话题' : '微博话题&热搜';
+        panelRefs.btnVideo.textContent = state.video.running ? '停止采集视频' : '微博视频数据';
+        panelRefs.btnCctv.textContent = state.cctv.running ? '停止采集央视频' : '央视频数据';
         if (panelRefs.shadow.activeElement !== panelRefs.rangeSelect) {
             panelRefs.rangeSelect.value = state.overviewRange || DEFAULT_OVERVIEW_RANGE;
         }
