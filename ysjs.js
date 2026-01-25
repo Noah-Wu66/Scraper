@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博话题&视频采集器（合并版）
 // @namespace    http://tampermonkey.net/
-// @version      1.1.0
+// @version      1.1.2
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -21,7 +21,8 @@
     const STORAGE_KEY = '__weibo_scraper_hub_v1';
     const SCROLL_WAIT_MS = 1500;
     const NO_NEW_RETRY_LIMIT = 6;
-    const DEFAULT_DAYS_LIMIT = 7;
+    const DEFAULT_COLLECT_RANGE_DAYS = 7;
+    const DEFAULT_OVERVIEW_RANGE = '30d';
     const TARGET_UID = '6189120710';
     const TARGET_USER_URL = `https://m.weibo.cn/u/${TARGET_UID}`;
     const CCTV_CPID = '18141106690386005';
@@ -35,7 +36,25 @@
         try { return JSON.parse(str); } catch { return fallback; }
     }
 
+    function pad(n) { return n < 10 ? '0' + n : n; }
+
+    function toDateTimeLocalValue(date) {
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    }
+
+    function buildDefaultCollectRange() {
+        const end = new Date();
+        const start = new Date(end.getTime() - DEFAULT_COLLECT_RANGE_DAYS * 24 * 60 * 60 * 1000);
+        return {
+            start,
+            end,
+            startValue: toDateTimeLocalValue(start),
+            endValue: toDateTimeLocalValue(end)
+        };
+    }
+
     function defaultState() {
+        const range = buildDefaultCollectRange();
         return {
             topic: {
                 running: false,
@@ -58,7 +77,9 @@
                 vids: [],
                 results: []
             },
-            daysLimit: DEFAULT_DAYS_LIMIT
+            overviewRange: DEFAULT_OVERVIEW_RANGE,
+            collectRangeStart: range.startValue,
+            collectRangeEnd: range.endValue
         };
     }
 
@@ -68,6 +89,32 @@
             : localStorage.getItem(STORAGE_KEY);
         const data = safeJsonParse(raw, null);
         return normalizeState(data);
+    }
+
+    function parseDateTimeLocalValue(value) {
+        if (!value) return null;
+        const m = String(value).trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})T(\d{1,2}):(\d{2})$/);
+        if (!m) return null;
+        return new Date(
+            parseInt(m[1], 10),
+            parseInt(m[2], 10) - 1,
+            parseInt(m[3], 10),
+            parseInt(m[4], 10),
+            parseInt(m[5], 10),
+            0
+        );
+    }
+
+    function normalizeCollectRange(startValue, endValue) {
+        const start = parseDateTimeLocalValue(startValue);
+        const end = parseDateTimeLocalValue(endValue);
+        if (!start || !end || start > end) return buildDefaultCollectRange();
+        return {
+            start,
+            end,
+            startValue: toDateTimeLocalValue(start),
+            endValue: toDateTimeLocalValue(end)
+        };
     }
 
     function normalizeState(data) {
@@ -81,6 +128,10 @@
             wechat: { ...base.wechat, ...(data.wechat || {}) },
             cctv: { ...base.cctv, ...(data.cctv || {}) }
         };
+        state.overviewRange = data.overviewRange || base.overviewRange;
+        const range = normalizeCollectRange(data.collectRangeStart, data.collectRangeEnd);
+        state.collectRangeStart = range.startValue;
+        state.collectRangeEnd = range.endValue;
         state.topic.topics = Array.isArray(state.topic.topics) ? state.topic.topics : [];
         state.topic.results = Array.isArray(state.topic.results) ? state.topic.results : [];
         state.video.results = Array.isArray(state.video.results) ? state.video.results : [];
@@ -218,17 +269,26 @@
     function findAllTopicsInPage(state) {
         const set = new Set();
         let reachedLimit = false;
+        const range = getCollectRange(state);
         const cards = Array.from(document.querySelectorAll('.card'));
         for (const card of cards) {
             if (card.dataset.topicScanned) continue;
             const timeEl = card.querySelector('.time');
             const timeStr = timeEl ? timeEl.textContent.trim() : '';
-            if (timeStr && !isWithinDays(timeStr, state.daysLimit || DEFAULT_DAYS_LIMIT)) {
-                reachedLimit = true;
-                card.dataset.topicScanned = 'true';
-                continue;
-            }
-            if (!timeStr) {
+            if (timeStr) {
+                const timeDate = parseTimeToDate(timeStr);
+                if (timeDate) {
+                    if (timeDate < range.start) {
+                        reachedLimit = true;
+                        card.dataset.topicScanned = 'true';
+                        continue;
+                    }
+                    if (timeDate > range.end) {
+                        card.dataset.topicScanned = 'true';
+                        continue;
+                    }
+                }
+            } else {
                 card.dataset.topicScanned = 'true';
                 continue;
             }
@@ -317,15 +377,22 @@
         return '';
     }
 
-    function findOverview30DaysTab() {
+    function getOverviewRangeLabel(range) {
+        if (range === 'all') return '全部';
+        if (range === '24h') return '24小时';
+        return '30天';
+    }
+
+    function findOverviewRangeTab(range) {
         const panel = Array.from(document.querySelectorAll('.ui-pannel')).find(p => (p.textContent || '').includes('数据总览'));
         if (!panel) return null;
         const tabs = Array.from(panel.querySelectorAll('.tab .tab_text'));
-        return tabs.find(t => (t.textContent || '').trim() === '30天') || null;
+        const label = getOverviewRangeLabel(range);
+        return tabs.find(t => (t.textContent || '').trim() === label) || null;
     }
 
-    function is30DaysActive() {
-        const tab = findOverview30DaysTab();
+    function isOverviewRangeActive(range) {
+        const tab = findOverviewRangeTab(range);
         if (!tab) return false;
         return tab.classList.contains('active');
     }
@@ -339,14 +406,14 @@
         return false;
     }
 
-    async function ensureOverview30DaysSelected() {
-        await waitFor(() => !!findOverview30DaysTab(), 8000);
+    async function ensureOverviewRangeSelected(range) {
+        await waitFor(() => !!findOverviewRangeTab(range), 8000);
         const before = JSON.stringify(getOverviewMetricsRaw());
-        if (!is30DaysActive()) {
-            const tab = findOverview30DaysTab();
+        if (!isOverviewRangeActive(range)) {
+            const tab = findOverviewRangeTab(range);
             if (tab) tab.click();
         }
-        await waitFor(() => is30DaysActive(), 8000);
+        await waitFor(() => isOverviewRangeActive(range), 8000);
         await waitFor(() => JSON.stringify(getOverviewMetricsRaw()) !== before, 8000);
     }
 
@@ -381,7 +448,7 @@
 
         try {
             await waitForVerificationClear();
-            await ensureOverview30DaysSelected();
+            await ensureOverviewRangeSelected(state.overviewRange || DEFAULT_OVERVIEW_RANGE);
             await sleep(500);
 
             state = loadState();
@@ -458,8 +525,6 @@
     }
 
     // ===== 视频采集逻辑 =====
-    function pad(n) { return n < 10 ? '0' + n : n; }
-
     function parseTimeToAbsolute(timeStr) {
         const now = new Date();
         let date = new Date(now);
@@ -499,31 +564,73 @@
         return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
     }
 
-    function isWithinDays(timeStr, days) {
-        const now = new Date();
-        if (timeStr.includes('分钟前') || timeStr.includes('刚刚')) return true;
-        if (timeStr.includes('小时前')) return true;
-        if (timeStr.includes('昨天')) return days >= 1;
-        if (timeStr.includes('天前')) {
-            const daysAgo = parseInt(timeStr);
-            return daysAgo <= days;
+    function parseDateTimeString(value) {
+        if (!value) return null;
+        const s = String(value).trim();
+        const m = s.match(/(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+        if (m) {
+            return new Date(
+                parseInt(m[1], 10),
+                parseInt(m[2], 10) - 1,
+                parseInt(m[3], 10),
+                parseInt(m[4], 10),
+                parseInt(m[5], 10),
+                parseInt(m[6] || '0', 10)
+            );
         }
-        const fullDateMatch = timeStr.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
-        if (fullDateMatch) {
-            const postDate = new Date(parseInt(fullDateMatch[1]), parseInt(fullDateMatch[2]) - 1, parseInt(fullDateMatch[3]));
-            const diffDays = (now - postDate) / (1000 * 60 * 60 * 24);
-            return diffDays <= days;
+        return parseDateOnlyString(s);
+    }
+
+    function parseDateOnlyString(value) {
+        if (!value) return null;
+        const s = String(value).trim();
+        const full = s.match(/(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+        if (full) {
+            return new Date(
+                parseInt(full[1], 10),
+                parseInt(full[2], 10) - 1,
+                parseInt(full[3], 10),
+                0, 0, 0
+            );
         }
-        const dateMatch = timeStr.match(/(\d{1,2})-(\d{1,2})/);
-        if (dateMatch) {
-            const month = parseInt(dateMatch[1]) - 1;
-            const day = parseInt(dateMatch[2]);
+        const short = s.match(/(\d{1,2})-(\d{1,2})/);
+        if (short) {
+            const now = new Date();
+            const month = parseInt(short[1], 10) - 1;
+            const day = parseInt(short[2], 10);
             const year = now.getMonth() < month ? now.getFullYear() - 1 : now.getFullYear();
-            const postDate = new Date(year, month, day);
-            const diffDays = (now - postDate) / (1000 * 60 * 60 * 24);
-            return diffDays <= days;
+            return new Date(year, month, day, 0, 0, 0);
         }
-        return true;
+        return null;
+    }
+
+    function parseTimeToDate(timeStr) {
+        if (!timeStr) return null;
+        const abs = parseTimeToAbsolute(timeStr);
+        return parseDateTimeString(abs);
+    }
+
+    function getCollectRange(state) {
+        const range = normalizeCollectRange(state.collectRangeStart, state.collectRangeEnd);
+        if (state.collectRangeStart !== range.startValue || state.collectRangeEnd !== range.endValue) {
+            state.collectRangeStart = range.startValue;
+            state.collectRangeEnd = range.endValue;
+            saveState(state);
+        }
+        return { start: range.start, end: range.end };
+    }
+
+    function isDateWithinRange(date, start, end) {
+        if (!date) return false;
+        return date >= start && date <= end;
+    }
+
+    function isDateOnlyWithinRange(dateStr, start, end) {
+        const date = parseDateOnlyString(dateStr);
+        if (!date) return false;
+        const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+        const endDay = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+        return date >= startDay && date <= endDay;
     }
 
     function extractTitle(textEl) {
@@ -557,15 +664,25 @@
         const cards = document.querySelectorAll('.card9');
         let reachedLimit = false;
         const existingLinks = new Set(state.video.results.map(r => r.链接));
+        const range = getCollectRange(state);
 
         cards.forEach((card) => {
             if (card.dataset.scraped) return;
 
             const timeEl = card.querySelector('.time');
             const timeStr = timeEl ? timeEl.textContent.trim() : '';
-            if (!isWithinDays(timeStr, state.daysLimit || DEFAULT_DAYS_LIMIT)) {
-                reachedLimit = true;
-                return;
+            if (timeStr) {
+                const timeDate = parseTimeToDate(timeStr);
+                if (timeDate) {
+                    if (timeDate < range.start) {
+                        reachedLimit = true;
+                        return;
+                    }
+                    if (timeDate > range.end) {
+                        card.dataset.scraped = 'true';
+                        return;
+                    }
+                }
             }
 
             const videoEl = card.querySelector('.card-video');
@@ -834,19 +951,24 @@
         }, 8000);
 
         const info = parseCctvDetailInfo();
-        const within = info.date
-            ? isWithinDays(info.date, state.daysLimit || DEFAULT_DAYS_LIMIT)
-            : true;
-
-        if (!within) {
-            state.cctv.running = false;
-            saveState(state);
-            showToast('已超出时间范围，央视频采集结束');
-            location.href = CCTV_LIST_URL;
-            return;
+        const range = getCollectRange(state);
+        const dateOnly = info.date ? parseDateOnlyString(info.date) : null;
+        if (dateOnly) {
+            const startDay = new Date(range.start.getFullYear(), range.start.getMonth(), range.start.getDate());
+            if (dateOnly < startDay) {
+                state.cctv.running = false;
+                saveState(state);
+                showToast('已超出时间范围，央视频采集结束');
+                location.href = CCTV_LIST_URL;
+                return;
+            }
         }
 
-        if (info.title) {
+        const within = info.date
+            ? isDateOnlyWithinRange(info.date, range.start, range.end)
+            : true;
+
+        if (within && info.title) {
             state.cctv.results.push({
                 序号: state.cctv.results.length + 1,
                 标题: info.title,
@@ -969,6 +1091,39 @@
         };
         reader.onerror = () => showToast('读取CSV失败');
         reader.readAsText(file);
+    }
+
+    function reindexResults(items) {
+        return (items || []).map((item, idx) => ({ ...item, 序号: idx + 1 }));
+    }
+
+    function filterVideoResultsByRange(results, range) {
+        const filtered = (results || []).filter((item) => {
+            const dt = parseDateTimeString(item['发布时间']);
+            return dt && isDateWithinRange(dt, range.start, range.end);
+        });
+        return reindexResults(filtered);
+    }
+
+    function filterWechatResultsByRange(results, range) {
+        const filtered = (results || []).filter((item) => {
+            const timeStr = item['发布时间'] || '';
+            const hasTime = /\d{1,2}:\d{2}/.test(timeStr);
+            if (hasTime) {
+                const dt = parseDateTimeString(timeStr);
+                return dt && isDateWithinRange(dt, range.start, range.end);
+            }
+            return isDateOnlyWithinRange(timeStr, range.start, range.end);
+        });
+        return reindexResults(filtered);
+    }
+
+    function filterCctvResultsByRange(results, range) {
+        const filtered = (results || []).filter((item) => {
+            const dateStr = item['发布时间'] || '';
+            return isDateOnlyWithinRange(dateStr, range.start, range.end);
+        });
+        return reindexResults(filtered);
     }
 
     // ===== 导出表格（仅改名，不改结构：多Sheet）=====
@@ -1099,7 +1254,11 @@
 
     function exportWorkbook() {
         const state = loadState();
-        const xml = buildWorkbookXml(state.topic.results, state.video.results, state.cctv.results, state.wechat.results);
+        const range = getCollectRange(state);
+        const filteredVideo = filterVideoResultsByRange(state.video.results, range);
+        const filteredCctv = filterCctvResultsByRange(state.cctv.results, range);
+        const filteredWechat = filterWechatResultsByRange(state.wechat.results, range);
+        const xml = buildWorkbookXml(state.topic.results, filteredVideo, filteredCctv, filteredWechat);
         const blob = new Blob([xml], { type: 'application/vnd.ms-excel' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -1140,9 +1299,17 @@
         const status = document.createElement('div');
         status.style.cssText = 'font-size:12px;line-height:1.6;margin-bottom:8px;';
 
-        const daysRow = document.createElement('div');
-        const daysLabel = document.createElement('span');
-        const daysInput = document.createElement('input');
+        const rangeRow = document.createElement('div');
+        const rangeLabel = document.createElement('span');
+        const rangeSelect = document.createElement('select');
+
+        const collectLabel = document.createElement('div');
+        const rangeStartRow = document.createElement('div');
+        const rangeStartLabel = document.createElement('span');
+        const rangeStartInput = document.createElement('input');
+        const rangeEndRow = document.createElement('div');
+        const rangeEndLabel = document.createElement('span');
+        const rangeEndInput = document.createElement('input');
 
         const btnTopic = document.createElement('button');
         const btnVideo = document.createElement('button');
@@ -1161,13 +1328,33 @@
             'font-size: 12px'
         ].join(';');
 
-        daysRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:6px 0 8px 0;font-size:12px;';
-        daysLabel.textContent = '采集周期(天)';
-        daysInput.type = 'number';
-        daysInput.min = '1';
-        daysInput.max = '365';
-        daysInput.placeholder = String(DEFAULT_DAYS_LIMIT);
-        daysInput.style.cssText = 'flex:1;min-width:0;padding:4px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px;';
+        rangeRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:6px 0 6px 0;font-size:12px;';
+        rangeLabel.textContent = '数据周期';
+        rangeSelect.style.cssText = 'flex:1;min-width:0;padding:4px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px;';
+        const rangeOptions = [
+            { value: 'all', label: '全部' },
+            { value: '24h', label: '24小时' },
+            { value: '30d', label: '30天' }
+        ];
+        rangeOptions.forEach((opt) => {
+            const option = document.createElement('option');
+            option.value = opt.value;
+            option.textContent = opt.label;
+            rangeSelect.appendChild(option);
+        });
+
+        collectLabel.textContent = '采集区间';
+        collectLabel.style.cssText = 'margin:6px 0 4px 0;font-size:12px;font-weight:bold;';
+
+        rangeStartRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;';
+        rangeStartLabel.textContent = '开始';
+        rangeStartInput.type = 'datetime-local';
+        rangeStartInput.style.cssText = 'flex:1;min-width:0;padding:4px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px;';
+
+        rangeEndRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0 8px 0;font-size:12px;';
+        rangeEndLabel.textContent = '结束';
+        rangeEndInput.type = 'datetime-local';
+        rangeEndInput.style.cssText = 'flex:1;min-width:0;padding:4px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px;';
 
         btnTopic.style.cssText = `${btnStyle};background:#9b59b6;color:#fff;`;
         btnVideo.style.cssText = `${btnStyle};background:#ff6b35;color:#fff;`;
@@ -1176,13 +1363,30 @@
         btnExport.style.cssText = `${btnStyle};background:#27ae60;color:#fff;`;
         btnClear.style.cssText = `${btnStyle};background:#666;color:#fff;`;
 
-        daysInput.oninput = () => {
-            const val = parseInt(daysInput.value, 10);
-            if (!Number.isFinite(val) || val < 1) return;
+        rangeSelect.onchange = () => {
             const state = loadState();
-            state.daysLimit = val;
+            state.overviewRange = rangeSelect.value || DEFAULT_OVERVIEW_RANGE;
             saveState(state);
         };
+
+        const saveCollectRange = () => {
+            const startVal = rangeStartInput.value;
+            const endVal = rangeEndInput.value;
+            if (!startVal || !endVal) return;
+            const start = parseDateTimeLocalValue(startVal);
+            const end = parseDateTimeLocalValue(endVal);
+            if (!start || !end || start > end) {
+                showToast('采集区间不合法');
+                return;
+            }
+            const state = loadState();
+            state.collectRangeStart = startVal;
+            state.collectRangeEnd = endVal;
+            saveState(state);
+        };
+
+        rangeStartInput.onchange = saveCollectRange;
+        rangeEndInput.onchange = saveCollectRange;
 
         btnTopic.onclick = onTopicToggleClick;
         btnVideo.onclick = onVideoToggleClick;
@@ -1190,13 +1394,14 @@
         btnWechat.onclick = onWechatImportClick;
         btnExport.onclick = exportWorkbook;
         btnClear.onclick = () => {
-            if (!confirm('确定清空全部数据？（采集周期不会清空）')) return;
+            if (!confirm('确定清空全部数据？（数据周期、采集区间不会清空）')) return;
             const prev = loadState();
-            const keepDays = prev.daysLimit || DEFAULT_DAYS_LIMIT;
             const next = defaultState();
-            next.daysLimit = keepDays;
+            next.overviewRange = prev.overviewRange || DEFAULT_OVERVIEW_RANGE;
+            next.collectRangeStart = prev.collectRangeStart || next.collectRangeStart;
+            next.collectRangeEnd = prev.collectRangeEnd || next.collectRangeEnd;
             saveState(next);
-            showToast('已清空（保留采集周期）');
+            showToast('已清空（保留数据周期、采集区间）');
         };
         btnExport.textContent = '导出表格';
         btnClear.textContent = '清空数据';
@@ -1204,10 +1409,17 @@
 
         wrap.appendChild(title);
         wrap.appendChild(status);
-        daysRow.appendChild(daysLabel);
-        daysRow.appendChild(daysInput);
+        rangeRow.appendChild(rangeLabel);
+        rangeRow.appendChild(rangeSelect);
 
-        wrap.appendChild(daysRow);
+        wrap.appendChild(rangeRow);
+        wrap.appendChild(collectLabel);
+        rangeStartRow.appendChild(rangeStartLabel);
+        rangeStartRow.appendChild(rangeStartInput);
+        rangeEndRow.appendChild(rangeEndLabel);
+        rangeEndRow.appendChild(rangeEndInput);
+        wrap.appendChild(rangeStartRow);
+        wrap.appendChild(rangeEndRow);
         wrap.appendChild(btnTopic);
         wrap.appendChild(btnVideo);
         wrap.appendChild(btnCctv);
@@ -1217,7 +1429,7 @@
         shadow.appendChild(wrap);
         document.body.appendChild(container);
 
-        panelRefs = { status, btnTopic, btnVideo, btnCctv, btnWechat, daysInput, shadow };
+        panelRefs = { status, btnTopic, btnVideo, btnCctv, btnWechat, rangeSelect, rangeStartInput, rangeEndInput, shadow };
         refreshPanel();
         setInterval(refreshPanel, 1000);
     }
@@ -1245,15 +1457,20 @@
         panelRefs.btnTopic.textContent = state.topic.running ? '停止采集话题' : '开始采集话题';
         panelRefs.btnVideo.textContent = state.video.running ? '停止采集视频' : '开始采集视频';
         panelRefs.btnCctv.textContent = state.cctv.running ? '停止采集央视频' : '开始采集央视频';
-        if (panelRefs.shadow.activeElement !== panelRefs.daysInput) {
-            panelRefs.daysInput.value = String(state.daysLimit || DEFAULT_DAYS_LIMIT);
+        if (panelRefs.shadow.activeElement !== panelRefs.rangeSelect) {
+            panelRefs.rangeSelect.value = state.overviewRange || DEFAULT_OVERVIEW_RANGE;
+        }
+        if (panelRefs.shadow.activeElement !== panelRefs.rangeStartInput) {
+            panelRefs.rangeStartInput.value = state.collectRangeStart || buildDefaultCollectRange().startValue;
+        }
+        if (panelRefs.shadow.activeElement !== panelRefs.rangeEndInput) {
+            panelRefs.rangeEndInput.value = state.collectRangeEnd || buildDefaultCollectRange().endValue;
         }
     }
 
     function queueStartAndGotoTop(action) {
         const state = loadState();
         state._pendingStart = action; // 'topic' | 'video'
-        state.daysLimit = state.daysLimit || DEFAULT_DAYS_LIMIT;
         saveState(state);
         if (isOnTargetUserPage()) {
             location.reload();
@@ -1269,7 +1486,6 @@
         state.topic.topics = [];
         state.topic.results = [];
         state.topic.step = 'collecting';
-        state.daysLimit = state.daysLimit || DEFAULT_DAYS_LIMIT;
         saveState(state);
         scrollAndCollectTopics(state).then(s => {
             if (s.topic.running && s.topic.topics.length > 0) {
@@ -1287,7 +1503,6 @@
         const state = loadState();
         state.video.running = true;
         state.video.results = [];
-        state.daysLimit = state.daysLimit || DEFAULT_DAYS_LIMIT;
         saveState(state);
         scrollAndCollectVideos();
     }
@@ -1332,7 +1547,6 @@
         state.cctv.idx = 0;
         state.cctv.vids = [];
         state.cctv.results = [];
-        state.daysLimit = state.daysLimit || DEFAULT_DAYS_LIMIT;
         saveState(state);
         if (!isOnCctvListPage()) {
             location.href = CCTV_LIST_URL;
