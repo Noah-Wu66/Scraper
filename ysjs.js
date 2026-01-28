@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.6
+// @version      1.2.8
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -31,6 +31,19 @@
     const CCTV_DETAIL_BASE = 'https://yangshipin.cn/video/home?vid=';
 
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+    function randInt(min, max) { return min + Math.floor(Math.random() * (max - min + 1)); }
+    async function humanScrollToBottom() {
+        const maxSteps = randInt(10, 18);
+        for (let i = 0; i < maxSteps; i++) {
+            const current = window.scrollY || window.pageYOffset || 0;
+            const bottom = document.body.scrollHeight - window.innerHeight;
+            if (current >= bottom - 5) break;
+            const step = randInt(180, 520);
+            window.scrollBy(0, step);
+            await sleepRange(30, 90);
+            if (Math.random() < 0.12) await sleepRange(120, 280);
+        }
+    }
     function nowStr() { return new Date().toLocaleString('zh-CN'); }
 
     function safeJsonParse(str, fallback) {
@@ -394,7 +407,7 @@
                 }
             }
 
-            window.scrollTo(0, document.body.scrollHeight);
+            await humanScrollToBottom();
             await sleepHumanLike(SCROLL_WAIT_MS, 700);
             state = loadState();
         }
@@ -844,7 +857,7 @@
                 }
             }
 
-            window.scrollTo(0, document.body.scrollHeight);
+            await humanScrollToBottom();
             await sleepHumanLike(1500, 800);
             state = loadState();
         }
@@ -978,7 +991,7 @@
             rounds += 1;
             if (noNew >= NO_NEW_RETRY_LIMIT || rounds >= 8) break;
 
-            window.scrollTo(0, document.body.scrollHeight);
+            await humanScrollToBottom();
             await sleep(1500);
             state = loadState();
         }
