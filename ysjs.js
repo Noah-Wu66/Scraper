@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.0
+// @version      1.2.2
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -82,10 +82,13 @@
                 active: false,
                 index: 0,
                 current: '',
+                requested: false,
                 started: false,
                 waitUntil: 0,
                 wechatDone: false
             },
+            _pendingStart: null,
+            _pendingStartToken: 0,
             overviewRange: DEFAULT_OVERVIEW_RANGE,
             collectRangeStart: range.startValue,
             collectRangeEnd: range.endValue
@@ -458,16 +461,20 @@
 
         try {
             await waitForVerificationClear();
+            state = loadState();
+            if (!state.topic.running) return;
             await ensureOverviewRangeSelected(state.overviewRange || DEFAULT_OVERVIEW_RANGE);
             await sleep(500);
 
             state = loadState();
+            if (!state.topic.running) return;
             const row = pushResultFromDetailPage(state);
             if (row && row.话题名称) {
                 saveState(state);
             }
 
             state = loadState();
+            if (!state.topic.running) return;
             state.topic.idx++;
             saveState(state);
 
@@ -482,6 +489,7 @@
             console.error('话题采集失败', e);
             showToast('话题抓取失败，已跳过');
             state = loadState();
+            if (!state.topic.running) return;
             state.topic.idx++;
             saveState(state);
             if (state.topic.idx < state.topic.topics.length) {
@@ -768,11 +776,14 @@
         }
 
         state = loadState();
+        const stoppedByUser = !state.video.running;
         state.video.running = false;
         delete state.video._lastCardCount;
         delete state.video._noNewRetry;
         saveState(state);
-        showToast(`视频采集完成：${state.video.results.length}条`);
+        if (!stoppedByUser) {
+            showToast(`视频采集完成：${state.video.results.length}条`);
+        }
     }
 
     // ===== 央视频采集逻辑 =====
@@ -959,6 +970,9 @@
             const timeEl = document.querySelector('.video-main-l-time');
             return !!(t && t.textContent.trim() && timeEl);
         }, 8000);
+
+        state = loadState();
+        if (!state.cctv.running) return;
 
         const info = parseCctvDetailInfo();
         const range = getCollectRange(state);
@@ -1526,6 +1540,7 @@
     function advanceAutoStep(state) {
         state.auto.index += 1;
         state.auto.current = '';
+        state.auto.requested = false;
         state.auto.started = false;
         state.auto.wechatDone = false;
         state.auto.waitUntil = Date.now() + AUTO_WAIT_MS;
@@ -1538,6 +1553,7 @@
 
         if (!state.auto.current) {
             state.auto.current = AUTO_SEQUENCE[state.auto.index] || '';
+            state.auto.requested = false;
             state.auto.started = false;
             state.auto.wechatDone = false;
             saveState(state);
@@ -1545,6 +1561,7 @@
 
         if (!state.auto.current) {
             state.auto.active = false;
+            state.auto.requested = false;
             state.auto.started = false;
             state.auto.waitUntil = 0;
             saveState(state);
@@ -1552,36 +1569,81 @@
             return;
         }
 
-        if (!state.auto.started) {
-            if (isActionRunning(state.auto.current, state)) {
-                state.auto.started = true;
-                saveState(state);
-                return;
-            }
-            if (state.auto.current === 'wechat') {
+        if (typeof state.auto.requested !== 'boolean') {
+            state.auto.requested = false;
+        }
+
+        const action = state.auto.current;
+
+        // 先“发起启动”，确保跳转/启动真正发生后，再进入下一步
+        if (!state.auto.requested) {
+            state.auto.requested = true;
+            if (action === 'wechat') {
                 state.auto.wechatDone = false;
+                // 微信导入的“开始”就是弹出文件选择框
+                state.auto.started = true;
+            } else {
+                // video/topic/cctv 必须等到 running 真的变成 true 才算开始
+                state.auto.started = false;
             }
-            state.auto.started = true;
             saveState(state);
-            startAutoAction(state.auto.current);
+            startAutoAction(action);
             return;
         }
 
-        if (state.auto.current === 'wechat') {
+        // 已经发起过启动，但还没真正开始跑：一直等到 running 变 true
+        if (!state.auto.started) {
+            if (isActionRunning(action, state)) {
+                state.auto.started = true;
+                saveState(state);
+            }
+            return;
+        }
+
+        // 已经开始：等待彻底完成后才进入下一步
+        if (action === 'wechat') {
             if (state.auto.wechatDone) {
                 advanceAutoStep(state);
             }
             return;
         }
 
-        if (!isActionRunning(state.auto.current, state)) {
+        if (!isActionRunning(action, state)) {
             advanceAutoStep(state);
         }
+    }
+
+    function bumpPendingStartToken(state) {
+        state._pendingStartToken = (state._pendingStartToken || 0) + 1;
+    }
+
+    function stopAllCollecting() {
+        const state = loadState();
+        state.auto.active = false;
+        state.auto.index = 0;
+        state.auto.current = '';
+        state.auto.requested = false;
+        state.auto.started = false;
+        state.auto.waitUntil = 0;
+        state.auto.wechatDone = false;
+
+        state.topic.running = false;
+        state.topic.step = 'idle';
+
+        state.video.running = false;
+
+        state.cctv.running = false;
+        state.cctv.step = 'idle';
+
+        state._pendingStart = null;
+        bumpPendingStartToken(state);
+        saveState(state);
     }
 
     function queueStartAndGotoTop(action) {
         const state = loadState();
         state._pendingStart = action; // 'topic' | 'video'
+        bumpPendingStartToken(state);
         saveState(state);
         if (isOnTargetUserPage()) {
             location.reload();
@@ -1648,19 +1710,14 @@
     function onAutoCollectClick() {
         const state = loadState();
         if (state.auto.active) {
-            state.auto.active = false;
-            state.auto.index = 0;
-            state.auto.current = '';
-            state.auto.started = false;
-            state.auto.waitUntil = 0;
-            state.auto.wechatDone = false;
-            saveState(state);
+            stopAllCollecting();
             showToast('已停止一键采集');
             return;
         }
         state.auto.active = true;
         state.auto.index = 0;
         state.auto.current = '';
+        state.auto.requested = false;
         state.auto.started = false;
         state.auto.waitUntil = 0;
         state.auto.wechatDone = false;
@@ -1694,6 +1751,11 @@
         input.type = 'file';
         input.accept = '.csv,text/csv';
         let fileSelected = false;
+
+        // 需要挂到 DOM 上，才能可靠触发 blur/cancel 检测
+        input.style.position = 'fixed';
+        input.style.left = '-9999px';
+        document.body.appendChild(input);
         
         input.onchange = () => {
             fileSelected = true;
@@ -1705,9 +1767,11 @@
                     state.auto.wechatDone = true;
                     saveState(state);
                 }
+                input.remove();
                 return;
             }
             importWechatFromFile(file);
+            input.remove();
         };
         
         // 检测用户取消文件选择（通过blur事件）
@@ -1734,9 +1798,12 @@
         if (!state._pendingStart) return;
         if (!isOnTargetUserPage()) return;
         const action = state._pendingStart;
+        const token = state._pendingStartToken || 0;
         state._pendingStart = null;
         saveState(state);
         setTimeout(() => {
+            const latest = loadState();
+            if ((latest._pendingStartToken || 0) !== token) return;
             if (action === 'topic') startTopicCollect();
             if (action === 'video') startVideoCollect();
         }, 600);
