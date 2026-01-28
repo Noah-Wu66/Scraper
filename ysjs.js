@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.5
+// @version      1.2.6
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -378,15 +378,19 @@
             const oldest = getOldestPublishDate(Array.from(document.querySelectorAll('.card')));
             if (oldest) {
                 const checkpoint = state.topic._pauseCheckpoint;
-                const checkpointMs = typeof checkpoint === 'number' ? checkpoint : oldest.getTime();
-                const diffDays = Math.floor((checkpointMs - oldest.getTime()) / (24 * 60 * 60 * 1000));
-                if (!checkpoint || diffDays >= 5) {
+                if (typeof checkpoint !== 'number') {
                     state.topic._pauseCheckpoint = oldest.getTime();
                     saveState(state);
-                    showToast('已翻过5天，休息20-30秒后继续');
-                    await sleepRange(20000, 30000);
-                    state = loadState();
-                    if (!state.topic.running) break;
+                } else {
+                    const diffDays = Math.floor((checkpoint - oldest.getTime()) / (24 * 60 * 60 * 1000));
+                    if (diffDays >= 5) {
+                        state.topic._pauseCheckpoint = oldest.getTime();
+                        saveState(state);
+                        showToast('已翻过5天，休息20-30秒后继续');
+                        await sleepRange(20000, 30000);
+                        state = loadState();
+                        if (!state.topic.running) break;
+                    }
                 }
             }
 
@@ -824,15 +828,19 @@
             const oldest = getOldestPublishDate(Array.from(document.querySelectorAll('.card9')));
             if (oldest) {
                 const checkpoint = state.video._pauseCheckpoint;
-                const checkpointMs = typeof checkpoint === 'number' ? checkpoint : oldest.getTime();
-                const diffDays = Math.floor((checkpointMs - oldest.getTime()) / (24 * 60 * 60 * 1000));
-                if (!checkpoint || diffDays >= 5) {
+                if (typeof checkpoint !== 'number') {
                     state.video._pauseCheckpoint = oldest.getTime();
                     saveState(state);
-                    showToast('已翻过5天，休息20-30秒后继续');
-                    await sleepRange(20000, 30000);
-                    state = loadState();
-                    if (!state.video.running) break;
+                } else {
+                    const diffDays = Math.floor((checkpoint - oldest.getTime()) / (24 * 60 * 60 * 1000));
+                    if (diffDays >= 5) {
+                        state.video._pauseCheckpoint = oldest.getTime();
+                        saveState(state);
+                        showToast('已翻过5天，休息20-30秒后继续');
+                        await sleepRange(20000, 30000);
+                        state = loadState();
+                        if (!state.video.running) break;
+                    }
                 }
             }
 
