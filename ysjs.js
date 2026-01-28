@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.1.9
+// @version      1.2.0
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -1499,7 +1499,9 @@
     function isActionRunning(action, state) {
         if (action === 'video') return !!state.video.running;
         if (action === 'topic') return !!state.topic.running;
-        if (action === 'cctv') return !!state.cctv.running;
+        if (action === 'cctv') {
+            return !!state.cctv.running && state.cctv.step !== 'idle';
+        }
         return false;
     }
 
@@ -1691,11 +1693,37 @@
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = '.csv,text/csv';
+        let fileSelected = false;
+        
         input.onchange = () => {
+            fileSelected = true;
             const file = input.files && input.files[0];
-            if (!file) return;
+            if (!file) {
+                // 用户取消了选择，标记为完成
+                const state = loadState();
+                if (state.auto.active && state.auto.current === 'wechat') {
+                    state.auto.wechatDone = true;
+                    saveState(state);
+                }
+                return;
+            }
             importWechatFromFile(file);
         };
+        
+        // 检测用户取消文件选择（通过blur事件）
+        input.addEventListener('blur', () => {
+            setTimeout(() => {
+                if (!fileSelected && document.body.contains(input)) {
+                    const state = loadState();
+                    if (state.auto.active && state.auto.current === 'wechat') {
+                        state.auto.wechatDone = true;
+                        saveState(state);
+                    }
+                    input.remove();
+                }
+            }, 500);
+        });
+        
         input.click();
     }
 
