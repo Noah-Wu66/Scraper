@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.3
+// @version      1.2.4
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -246,6 +246,18 @@
         return sleep(next);
     }
 
+    function getPublishTimeText(card) {
+        if (!card) return '';
+        const headerTime = card.querySelector('.weibo-top .time') || card.querySelector('header .time');
+        let timeStr = headerTime ? headerTime.textContent.trim() : '';
+        if (!timeStr) {
+            const anyTime = card.querySelector('.time');
+            timeStr = anyTime ? anyTime.textContent.trim() : '';
+        }
+        if (/^\d{1,2}:\d{2}$/.test(timeStr)) return '';
+        return timeStr;
+    }
+
     // ===== 话题采集逻辑 =====
     function normalizeTopicName(name) {
         if (!name) return '';
@@ -292,8 +304,7 @@
         const cards = Array.from(document.querySelectorAll('.card'));
         for (const card of cards) {
             if (card.dataset.topicScanned) continue;
-            const timeEl = card.querySelector('.time');
-            const timeStr = timeEl ? timeEl.textContent.trim() : '';
+            const timeStr = getPublishTimeText(card);
             if (timeStr) {
                 const timeDate = parseTimeToDate(timeStr);
                 if (timeDate) {
@@ -693,8 +704,7 @@
         cards.forEach((card) => {
             if (card.dataset.scraped) return;
 
-            const timeEl = card.querySelector('.time');
-            const timeStr = timeEl ? timeEl.textContent.trim() : '';
+            const timeStr = getPublishTimeText(card);
             if (timeStr) {
                 const timeDate = parseTimeToDate(timeStr);
                 if (timeDate) {
