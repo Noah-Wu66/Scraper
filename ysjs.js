@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.2
+// @version      1.2.3
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -223,21 +223,27 @@
     }
 
     function isVerificationVisible() {
-        const textHit = /验证码|安全验证|安全校验|拖动滑块|请完成验证/.test(document.body ? document.body.textContent : '');
+        const textHit = /验证码|安全验证|安全校验|拖动滑块|请完成验证|访问过于频繁|操作频繁|请求过于频繁|系统繁忙|请稍后再试|访问异常|风险提示|账号异常/.test(document.body ? document.body.textContent : '');
         const elHit = document.querySelector(
             '.geetest_holder,.geetest_panel,.yidun_panel,.yidun_popup,.captcha,[id*="captcha"],[class*="captcha"],iframe[src*="captcha"],iframe[src*="geetest"],iframe[src*="yidun"]'
         );
         return !!(textHit || elHit);
     }
 
-    async function waitForVerificationClear() {
+    async function waitForAntiBotClear() {
         if (!isVerificationVisible()) return;
-        showToast('检测到验证，请手动完成后自动继续');
+        showToast('检测到风控/验证，请手动处理，完成后自动继续');
         while (isVerificationVisible()) {
             await sleep(1000);
         }
-        showToast('验证通过，继续采集');
-        await sleep(500);
+        showToast('已通过验证，继续采集');
+        await sleep(600);
+    }
+
+    function sleepHumanLike(baseMs, jitterMs) {
+        const jitter = Math.floor(Math.random() * (jitterMs * 2 + 1)) - jitterMs;
+        const next = Math.max(300, baseMs + jitter);
+        return sleep(next);
     }
 
     // ===== 话题采集逻辑 =====
@@ -320,7 +326,7 @@
         let noGrow = 0;
 
         while (state.topic.running) {
-            await waitForVerificationClear();
+            await waitForAntiBotClear();
             const scan = findAllTopicsInPage(state);
             for (const name of scan.topics) {
                 if (state.topic.topics.includes(name)) continue;
@@ -340,7 +346,7 @@
             if (noGrow >= NO_NEW_RETRY_LIMIT) break;
 
             window.scrollTo(0, document.body.scrollHeight);
-            await sleep(SCROLL_WAIT_MS);
+            await sleepHumanLike(SCROLL_WAIT_MS, 700);
             state = loadState();
         }
 
@@ -460,11 +466,11 @@
         if (!state.topic.running || !isOnDetailPage()) return;
 
         try {
-            await waitForVerificationClear();
+            await waitForAntiBotClear();
             state = loadState();
             if (!state.topic.running) return;
             await ensureOverviewRangeSelected(state.overviewRange || DEFAULT_OVERVIEW_RANGE);
-            await sleep(500);
+            await sleepHumanLike(500, 300);
 
             state = loadState();
             if (!state.topic.running) return;
@@ -747,6 +753,7 @@
     async function scrollAndCollectVideos() {
         let state = loadState();
         while (state.video.running) {
+            await waitForAntiBotClear();
             const reachedLimit = collectVideoData(state);
             saveState(state);
 
@@ -771,7 +778,7 @@
             saveState(state);
 
             window.scrollTo(0, document.body.scrollHeight);
-            await sleep(1500);
+            await sleepHumanLike(1500, 800);
             state = loadState();
         }
 
