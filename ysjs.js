@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.9
+// @version      1.2.10
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -45,26 +45,11 @@
         }
     }
 
-    async function scrollToLoadMore(maxRounds, stableRounds) {
+    async function scrollToLoadMore(maxRounds) {
         const max = typeof maxRounds === 'number' ? maxRounds : 10;
-        const stableNeed = typeof stableRounds === 'number' ? stableRounds : 3;
-        let lastHeight = 0;
-        let stable = 0;
         for (let i = 0; i < max; i++) {
-            const height = document.body.scrollHeight || 0;
-            if (height > lastHeight + 10) {
-                lastHeight = height;
-                stable = 0;
-            } else {
-                stable += 1;
-            }
-
-            window.scrollTo(0, document.body.scrollHeight);
-            await sleepRange(500, 900);
             await humanScrollToBottom();
-            await sleepRange(400, 800);
-
-            if (stable >= stableNeed) break;
+            await sleepHumanLike(1200, 600);
         }
     }
     function nowStr() { return new Date().toLocaleString('zh-CN'); }
@@ -1004,19 +989,15 @@
             mergeCctvVids(state);
             saveState(state);
 
-            if (state.cctv.vids.length > 0 && state.cctv.idx < state.cctv.vids.length) {
-                break;
-            }
-
             if (state.cctv.vids.length === lastCount) noNew += 1;
             else noNew = 0;
             lastCount = state.cctv.vids.length;
 
             rounds += 1;
-            if (noNew >= NO_NEW_RETRY_LIMIT || rounds >= 8) break;
+            if (rounds >= 10) break;
 
-            await scrollToLoadMore(8, 2);
-            await sleep(1200);
+            await scrollToLoadMore(1);
+            await sleepHumanLike(1200, 600);
             state = loadState();
         }
 
