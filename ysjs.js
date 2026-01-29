@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.12
+// @version      1.2.13
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -794,6 +794,10 @@
     }
 
     function buildWeiboLink(card) {
+        // 优先从 Vue 组件读取微博 ID
+        if (card.__vue__ && card.__vue__.item && card.__vue__.item.id) {
+            return `https://m.weibo.cn/status/${card.__vue__.item.id}`;
+        }
         const cardWrap = card.closest('[data-id]') || card.querySelector('[data-id]');
         if (cardWrap && cardWrap.dataset.id) {
             return `https://m.weibo.cn/status/${cardWrap.dataset.id}`;
