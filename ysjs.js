@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.8
+// @version      1.2.9
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -42,6 +42,29 @@
             window.scrollBy(0, step);
             await sleepRange(30, 90);
             if (Math.random() < 0.12) await sleepRange(120, 280);
+        }
+    }
+
+    async function scrollToLoadMore(maxRounds, stableRounds) {
+        const max = typeof maxRounds === 'number' ? maxRounds : 10;
+        const stableNeed = typeof stableRounds === 'number' ? stableRounds : 3;
+        let lastHeight = 0;
+        let stable = 0;
+        for (let i = 0; i < max; i++) {
+            const height = document.body.scrollHeight || 0;
+            if (height > lastHeight + 10) {
+                lastHeight = height;
+                stable = 0;
+            } else {
+                stable += 1;
+            }
+
+            window.scrollTo(0, document.body.scrollHeight);
+            await sleepRange(500, 900);
+            await humanScrollToBottom();
+            await sleepRange(400, 800);
+
+            if (stable >= stableNeed) break;
         }
     }
     function nowStr() { return new Date().toLocaleString('zh-CN'); }
@@ -947,15 +970,16 @@
         const list = data?.payloads?.userShareData?.video_list
             || data?.payloads?.userShareData?.cnt_info?.video_list
             || [];
-        const vids = [];
+        const set = new Set();
         for (const item of list) {
             const vid = item?.vid || extractCctvVidFromLink(item?.h5Link);
-            if (vid) vids.push(vid);
+            if (vid) set.add(vid);
         }
-        if (vids.length > 0) return vids;
         const domVids = collectCctvVidsFromDom();
-        if (domVids.length > 0) return domVids;
-        return collectCctvVidsFromHtml();
+        domVids.forEach(vid => set.add(vid));
+        const htmlVids = collectCctvVidsFromHtml();
+        htmlVids.forEach(vid => set.add(vid));
+        return Array.from(set);
     }
 
     function mergeCctvVids(state) {
@@ -991,8 +1015,8 @@
             rounds += 1;
             if (noNew >= NO_NEW_RETRY_LIMIT || rounds >= 8) break;
 
-            await humanScrollToBottom();
-            await sleep(1500);
+            await scrollToLoadMore(8, 2);
+            await sleep(1200);
             state = loadState();
         }
 
