@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.13
+// @version      1.2.14
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -284,6 +284,35 @@
         }
         if (/^\d{1,2}:\d{2}$/.test(timeStr)) return '';
         return timeStr;
+    }
+
+    function getVueCreatedAt(card) {
+        // 从 Vue 组件获取真实发布时间
+        if (card && card.__vue__ && card.__vue__.item && card.__vue__.item.created_at) {
+            return card.__vue__.item.created_at;
+        }
+        return null;
+    }
+
+    function parseVueCreatedAt(createdAt) {
+        // 解析 Vue 的 created_at 格式，如 "Thu Jan 29 14:23:46 +0800 2026"
+        if (!createdAt) return null;
+        const date = new Date(createdAt);
+        if (isNaN(date.getTime())) return null;
+        return date;
+    }
+
+    function formatVueCreatedAt(createdAt) {
+        // 将 Vue 的 created_at 格式化为 "YYYY-MM-DD HH:MM:SS"
+        const date = parseVueCreatedAt(createdAt);
+        if (!date) return '';
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        const hh = String(date.getHours()).padStart(2, '0');
+        const mm = String(date.getMinutes()).padStart(2, '0');
+        const ss = String(date.getSeconds()).padStart(2, '0');
+        return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
     }
 
     function getOldestPublishDate(cards) {
@@ -823,20 +852,23 @@
         for (const card of cards) {
             if (card.dataset.scraped) continue;
 
+            // 优先从 Vue 获取真实时间，否则从页面元素获取
+            const vueCreatedAt = getVueCreatedAt(card);
+            const vueDate = parseVueCreatedAt(vueCreatedAt);
             const timeStr = getPublishTimeText(card);
-            if (timeStr) {
-                const timeDate = parseTimeToDate(timeStr);
-                if (timeDate) {
-                    if (timeDate < range.start) {
-                        reachedLimit = true;
-                        continue;
-                    }
-                    if (timeDate > range.end) {
-                        card.dataset.scraped = 'true';
-                        continue;
-                    }
+            const timeDate = vueDate || parseTimeToDate(timeStr);
+
+            if (timeDate) {
+                if (timeDate < range.start) {
+                    reachedLimit = true;
+                    continue;
+                }
+                if (timeDate > range.end) {
+                    card.dataset.scraped = 'true';
+                    continue;
                 }
             }
+
             const link = buildWeiboLink(card);
             if (!link || existingLinks.has(link)) {
                 card.dataset.scraped = 'true';
@@ -859,7 +891,8 @@
             const like = btns[2] ? parseCount(btns[2].textContent) : 0;
 
             const title = await extractWeiboFullText(card);
-            const formattedTime = parseTimeToAbsolute(timeStr);
+            // 优先使用 Vue 的真实时间
+            const formattedTime = vueCreatedAt ? formatVueCreatedAt(vueCreatedAt) : parseTimeToAbsolute(timeStr);
 
             state.video.results.push({
                 序号: state.video.results.length + 1,
