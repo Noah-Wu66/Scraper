@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.11
-// @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
+// @version      1.2.12
+// @description  话题30天数据 + 用户微博数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
 // @match        https://m.s.weibo.com/*
@@ -29,6 +29,7 @@
     const CCTV_CPID = '18141106690386005';
     const CCTV_LIST_URL = `https://w.yangshipin.cn/user?cpid=${CCTV_CPID}`;
     const CCTV_DETAIL_BASE = 'https://yangshipin.cn/video/home?vid=';
+    const WEIBO_TEXT_CACHE = new Map();
 
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
     function randInt(min, max) { return min + Math.floor(Math.random() * (max - min + 1)); }
@@ -618,7 +619,7 @@
         location.href = TARGET_USER_URL;
     }
 
-    // ===== 视频采集逻辑 =====
+    // ===== 微博采集逻辑 =====
     function parseTimeToAbsolute(timeStr) {
         const now = new Date();
         let date = new Date(now);
@@ -727,14 +728,69 @@
         return date >= startDay && date <= endDay;
     }
 
-    function extractTitle(textEl) {
-        if (!textEl) return '';
-        const text = textEl.textContent.trim();
-        const topicMatch = text.match(/#([^#]+)#/);
-        if (topicMatch) return topicMatch[1];
-        const bracketMatch = text.match(/【([^】]+)】/);
-        if (bracketMatch) return bracketMatch[1];
-        return text.substring(0, 30).replace(/\s+/g, ' ');
+    function normalizeWeiboText(raw, removeFullTextHint) {
+        if (!raw && raw !== 0) return '';
+        let text = String(raw);
+        if (removeFullTextHint) {
+            text = text.replace(/\s*全文\s*$/, '');
+        }
+        return text.replace(/\s+/g, ' ').trim();
+    }
+
+    function htmlToText(html) {
+        if (!html) return '';
+        const div = document.createElement('div');
+        div.innerHTML = html;
+        return div.textContent || '';
+    }
+
+    function extractWeiboIdFromLink(link) {
+        if (!link) return '';
+        const m = String(link).match(/\/status\/(\d+)/);
+        return m ? m[1] : '';
+    }
+
+    function findFullTextLink(card) {
+        if (!card) return null;
+        const links = Array.from(card.querySelectorAll('.weibo-text a'));
+        return links.find(a => (a.textContent || '').trim() === '全文') || null;
+    }
+
+    async function fetchWeiboFullTextById(weiboId) {
+        if (!weiboId) return '';
+        if (WEIBO_TEXT_CACHE.has(weiboId)) return WEIBO_TEXT_CACHE.get(weiboId);
+        let text = '';
+        try {
+            const resp = await fetch(`https://m.weibo.cn/statuses/show?id=${weiboId}`, {
+                credentials: 'same-origin'
+            });
+            if (!resp.ok) return '';
+            const data = await resp.json();
+            const raw = data?.data?.text_raw || '';
+            if (raw) {
+                text = normalizeWeiboText(raw, false);
+            } else if (data?.data?.text) {
+                text = normalizeWeiboText(htmlToText(data.data.text), false);
+            }
+            if (text) WEIBO_TEXT_CACHE.set(weiboId, text);
+        } catch (e) {
+            return '';
+        }
+        return text;
+    }
+
+    async function extractWeiboFullText(card) {
+        const textEl = card ? card.querySelector('.weibo-text') : null;
+        const hasFullLink = !!findFullTextLink(card);
+        const fallback = normalizeWeiboText(textEl ? textEl.textContent : '', hasFullLink);
+        if (!hasFullLink) return fallback;
+        const link = buildWeiboLink(card);
+        const weiboId = extractWeiboIdFromLink(link);
+        if (!weiboId) return fallback;
+        const fullText = await fetchWeiboFullTextById(weiboId);
+        if (fullText) return fullText;
+        if (!WEIBO_TEXT_CACHE.has(weiboId)) WEIBO_TEXT_CACHE.set(weiboId, fallback);
+        return fallback;
     }
 
     function buildWeiboLink(card) {
@@ -754,14 +810,14 @@
         return '';
     }
 
-    function collectVideoData(state) {
+    async function collectVideoData(state) {
         const cards = document.querySelectorAll('.card9');
         let reachedLimit = false;
         const existingLinks = new Set(state.video.results.map(r => r.链接));
         const range = getCollectRange(state);
 
-        cards.forEach((card) => {
-            if (card.dataset.scraped) return;
+        for (const card of cards) {
+            if (card.dataset.scraped) continue;
 
             const timeStr = getPublishTimeText(card);
             if (timeStr) {
@@ -769,27 +825,28 @@
                 if (timeDate) {
                     if (timeDate < range.start) {
                         reachedLimit = true;
-                        return;
+                        continue;
                     }
                     if (timeDate > range.end) {
                         card.dataset.scraped = 'true';
-                        return;
+                        continue;
                     }
                 }
             }
-
-            const videoEl = card.querySelector('.card-video');
-            if (!videoEl) return;
-
             const link = buildWeiboLink(card);
             if (!link || existingLinks.has(link)) {
                 card.dataset.scraped = 'true';
-                return;
+                continue;
             }
 
-            const playCountEl = videoEl.querySelector('.m-box-col');
-            const playCountStr = playCountEl ? playCountEl.textContent.trim() : '0';
-            const playCount = parseCount(playCountStr.replace('次播放', ''));
+            const videoEl = card.querySelector('.card-video');
+            let playCount = '';
+            if (videoEl) {
+                const playCountEl = videoEl.querySelector('.m-box-col');
+                const playCountStr = playCountEl ? playCountEl.textContent.trim() : '';
+                const parsed = parseCount(playCountStr.replace('次播放', ''));
+                playCount = parsed || 0;
+            }
 
             const footer = card.querySelector('footer');
             const btns = footer ? footer.querySelectorAll('.m-diy-btn h4') : [];
@@ -797,8 +854,7 @@
             const comment = btns[1] ? parseCount(btns[1].textContent) : 0;
             const like = btns[2] ? parseCount(btns[2].textContent) : 0;
 
-            const textEl = card.querySelector('.weibo-text');
-            const title = extractTitle(textEl);
+            const title = await extractWeiboFullText(card);
             const formattedTime = parseTimeToAbsolute(timeStr);
 
             state.video.results.push({
@@ -814,7 +870,7 @@
 
             card.dataset.scraped = 'true';
             existingLinks.add(link);
-        });
+        }
 
         return reachedLimit;
     }
@@ -823,11 +879,11 @@
         let state = loadState();
         while (state.video.running) {
             await waitForAntiBotClear();
-            const reachedLimit = collectVideoData(state);
+            const reachedLimit = await collectVideoData(state);
             saveState(state);
 
             if (reachedLimit) {
-                showToast('已到时间范围，视频采集结束');
+                showToast('已到时间范围，微博采集结束');
                 break;
             }
 
@@ -837,7 +893,7 @@
             if (currentCardCount === state.video._lastCardCount) {
                 state.video._noNewRetry++;
                 if (state.video._noNewRetry > 5) {
-                    showToast('没有更多内容，视频采集结束');
+                    showToast('没有更多内容，微博采集结束');
                     break;
                 }
             } else {
@@ -878,7 +934,7 @@
         delete state.video._pauseCheckpoint;
         saveState(state);
         if (!stoppedByUser) {
-            showToast(`视频采集完成：${state.video.results.length}条`);
+            showToast(`微博采集完成：${state.video.results.length}条`);
         }
     }
 
@@ -1591,7 +1647,7 @@
         const videoStatus = state.video.running ? '采集中' : '空闲';
         const cctvStatus = state.cctv.running ? `采集中 ${state.cctv.idx + 1}/${state.cctv.vids.length}` : '空闲';
         const topicLabel = '微博话题&热搜';
-        const videoLabel = '微博视频数据';
+        const videoLabel = '微博数据';
         const cctvLabel = '央视频数据';
         const wechatLabel = '公众号数据';
         panelRefs.status.innerHTML = [
@@ -1605,7 +1661,7 @@
         ].join('<br>');
 
         panelRefs.btnAuto.textContent = state.auto.active ? '一键采集中' : '一键采集';
-        panelRefs.btnVideo.textContent = state.video.running ? '停止采集视频' : '微博视频数据';
+        panelRefs.btnVideo.textContent = state.video.running ? '停止采集微博' : '微博数据';
         panelRefs.btnTopic.textContent = state.topic.running ? '停止采集话题' : '微博话题&热搜';
         panelRefs.btnCctv.textContent = state.cctv.running ? '停止采集央视频' : '央视频数据';
         if (panelRefs.shadow.activeElement !== panelRefs.rangeSelect) {
@@ -1818,7 +1874,7 @@
         if (state.video.running) {
             state.video.running = false;
             saveState(state);
-            showToast('已停止视频采集');
+            showToast('已停止微博采集');
             return;
         }
         queueStartAndGotoTop('video');
