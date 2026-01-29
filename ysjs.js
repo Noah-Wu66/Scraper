@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.10
+// @version      1.2.11
 // @description  话题30天数据 + 用户视频数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -936,6 +936,18 @@
             const vid = extractCctvVidFromLink(href);
             if (vid) set.add(vid);
         }
+        const items = Array.from(document.querySelectorAll('.p-user-list-item[data-trace]'));
+        for (const item of items) {
+            const trace = item.getAttribute('data-trace') || '';
+            const m = trace.match(/fval1:([a-zA-Z0-9]+)/);
+            if (m && m[1]) set.add(m[1]);
+        }
+        const imgs = Array.from(document.querySelectorAll('img[data-src], img[src]'));
+        for (const img of imgs) {
+            const src = img.getAttribute('data-src') || img.getAttribute('src') || '';
+            const m = src.match(/videoPic\/([a-zA-Z0-9]+)\//);
+            if (m && m[1]) set.add(m[1]);
+        }
         return Array.from(set);
     }
 
@@ -945,6 +957,14 @@
         const set = new Set();
         let m;
         while ((m = re.exec(html)) !== null) {
+            if (m[1]) set.add(m[1]);
+        }
+        const reTrace = /fval1:([a-zA-Z0-9]+)/g;
+        while ((m = reTrace.exec(html)) !== null) {
+            if (m[1]) set.add(m[1]);
+        }
+        const rePic = /videoPic\/([a-zA-Z0-9]+)\//g;
+        while ((m = rePic.exec(html)) !== null) {
             if (m[1]) set.add(m[1]);
         }
         return Array.from(set);
