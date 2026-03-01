@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.14
+// @version      1.2.15
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -16,7 +16,7 @@
 // @grant        GM_deleteValue
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     const STORAGE_KEY = '__weibo_scraper_hub_v1';
@@ -1468,7 +1468,13 @@
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `微博采集数据_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}.xlsx`;
+        const rangeStart = parseDateTimeLocalValue(state.collectRangeStart);
+        const rangeEnd = parseDateTimeLocalValue(state.collectRangeEnd);
+        const fmtPart = (d) => `${d.getMonth() + 1}月${d.getDate()}日${d.getHours()}时`;
+        const fileName = rangeStart && rangeEnd
+            ? `${fmtPart(rangeStart)}-${fmtPart(rangeEnd)}央视军事微信、微博、央视频发布数据汇总.xlsx`
+            : `央视军事微信、微博、央视频发布数据汇总.xlsx`;
+        a.download = fileName;
         a.click();
         URL.revokeObjectURL(url);
     }
@@ -1966,7 +1972,7 @@
         input.style.position = 'fixed';
         input.style.left = '-9999px';
         document.body.appendChild(input);
-        
+
         input.onchange = () => {
             fileSelected = true;
             const file = input.files && input.files[0];
@@ -1983,7 +1989,7 @@
             importWechatFromFile(file);
             input.remove();
         };
-        
+
         // 检测用户取消文件选择（通过blur事件）
         input.addEventListener('blur', () => {
             setTimeout(() => {
@@ -1997,7 +2003,7 @@
                 }
             }, 500);
         });
-        
+
         input.click();
     }
 
