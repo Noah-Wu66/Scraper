@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.15
+// @version      1.2.16
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -20,7 +20,12 @@
     'use strict';
 
     const STORAGE_KEY = '__weibo_scraper_hub_v1';
-    const SCROLL_WAIT_MS = 1500;
+    const SCROLL_WAIT_MS = 2800;
+    const TOPIC_JUMP_DELAY_MIN = 3000;
+    const TOPIC_JUMP_DELAY_MAX = 8000;
+    const TOPIC_BATCH_SIZE = 5;
+    const TOPIC_BATCH_REST_MIN = 30000;
+    const TOPIC_BATCH_REST_MAX = 60000;
     const NO_NEW_RETRY_LIMIT = 6;
     const DEFAULT_COLLECT_RANGE_DAYS = 7;
     const DEFAULT_OVERVIEW_RANGE = '30d';
@@ -589,6 +594,15 @@
                 saveState(state);
                 showToast(`话题采集完成：${state.topic.results.length}条`);
             } else {
+                // 每采集 TOPIC_BATCH_SIZE 个话题后长休息
+                if (state.topic.idx > 0 && state.topic.idx % TOPIC_BATCH_SIZE === 0) {
+                    showToast(`已采集${state.topic.idx}个话题，休息30-60秒防风控`);
+                    await sleepRange(TOPIC_BATCH_REST_MIN, TOPIC_BATCH_REST_MAX);
+                    state = loadState();
+                    if (!state.topic.running) return;
+                }
+                // 话题之间随机延迟3-8秒
+                await sleepRange(TOPIC_JUMP_DELAY_MIN, TOPIC_JUMP_DELAY_MAX);
                 location.href = buildDetailUrl(state.topic.topics[state.topic.idx]);
             }
         } catch (e) {
@@ -599,6 +613,7 @@
             state.topic.idx++;
             saveState(state);
             if (state.topic.idx < state.topic.topics.length) {
+                await sleepRange(TOPIC_JUMP_DELAY_MIN, TOPIC_JUMP_DELAY_MAX);
                 location.href = buildDetailUrl(state.topic.topics[state.topic.idx]);
             } else {
                 state.topic.running = false;
@@ -788,10 +803,15 @@
     async function fetchWeiboFullTextById(weiboId) {
         if (!weiboId) return '';
         if (WEIBO_TEXT_CACHE.has(weiboId)) return WEIBO_TEXT_CACHE.get(weiboId);
+        await sleepRange(1000, 3000);
         let text = '';
         try {
             const resp = await fetch(`https://m.weibo.cn/statuses/show?id=${weiboId}`, {
-                credentials: 'same-origin'
+                credentials: 'same-origin',
+                headers: {
+                    'Referer': 'https://m.weibo.cn/',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
             });
             if (!resp.ok) return '';
             const data = await resp.json();
@@ -959,7 +979,7 @@
             }
 
             await humanScrollToBottom();
-            await sleepHumanLike(1500, 800);
+            await sleepHumanLike(2800, 1000);
             state = loadState();
         }
 
