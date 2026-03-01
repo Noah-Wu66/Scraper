@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.16
+// @version      1.2.17
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -1542,9 +1542,6 @@
         const rangeEndLabel = document.createElement('span');
         const rangeEndInput = document.createElement('input');
 
-        const btnAuto = document.createElement('button');
-        const actionToggle = document.createElement('button');
-        const actionGroup = document.createElement('div');
         const btnVideo = document.createElement('button');
         const btnTopic = document.createElement('button');
         const btnCctv = document.createElement('button');
@@ -1594,9 +1591,7 @@
         rangeEndInput.type = 'datetime-local';
         rangeEndInput.style.cssText = 'flex:1;min-width:0;padding:4px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px;';
 
-        btnAuto.style.cssText = `${btnStyle};background:#f39c12;color:#fff;`;
-        actionToggle.style.cssText = `${btnStyle};background:#34495e;color:#fff;`;
-        actionGroup.style.cssText = 'display:none;';
+
         btnVideo.style.cssText = `${btnStyle};background:#ff6b35;color:#fff;`;
         btnTopic.style.cssText = `${btnStyle};background:#9b59b6;color:#fff;`;
         btnCctv.style.cssText = `${btnStyle};background:#2d98da;color:#fff;`;
@@ -1632,7 +1627,7 @@
         rangeStartInput.onchange = saveCollectRange;
         rangeEndInput.onchange = saveCollectRange;
 
-        btnAuto.onclick = onAutoCollectClick;
+
         btnVideo.onclick = onVideoToggleClick;
         btnTopic.onclick = onTopicToggleClick;
         btnCctv.onclick = onCctvToggleClick;
@@ -1648,8 +1643,6 @@
             showToast('已清空（保留数据周期、采集区间）');
         };
         btnExport.onclick = exportWorkbook;
-        btnAuto.textContent = '一键采集';
-        actionToggle.textContent = '展开采集功能';
         btnClear.textContent = '清除数据';
         btnWechat.textContent = '公众号数据';
         btnExport.textContent = '导出表格';
@@ -1672,19 +1665,10 @@
         rangeEndRow.appendChild(rangeEndInput);
         wrap.appendChild(rangeStartRow);
         wrap.appendChild(rangeEndRow);
-        actionToggle.onclick = () => {
-            const isOpen = actionGroup.style.display !== 'none';
-            actionGroup.style.display = isOpen ? 'none' : 'block';
-            actionToggle.textContent = isOpen ? '展开采集功能' : '收起采集功能';
-        };
-
-        wrap.appendChild(btnAuto);
-        wrap.appendChild(actionToggle);
-        actionGroup.appendChild(btnVideo);
-        actionGroup.appendChild(btnTopic);
-        actionGroup.appendChild(btnCctv);
-        actionGroup.appendChild(btnWechat);
-        wrap.appendChild(actionGroup);
+        wrap.appendChild(btnVideo);
+        wrap.appendChild(btnTopic);
+        wrap.appendChild(btnCctv);
+        wrap.appendChild(btnWechat);
         wrap.appendChild(btnClear);
         wrap.appendChild(btnExport);
         footerLink.appendChild(footerIcon);
@@ -1694,7 +1678,7 @@
         shadow.appendChild(wrap);
         document.body.appendChild(container);
 
-        panelRefs = { status, btnAuto, btnVideo, btnTopic, btnCctv, btnWechat, rangeSelect, rangeStartInput, rangeEndInput, shadow };
+        panelRefs = { status, btnVideo, btnTopic, btnCctv, btnWechat, rangeSelect, rangeStartInput, rangeEndInput, shadow };
         refreshPanel();
         setInterval(refreshPanel, 1000);
     }
@@ -1723,7 +1707,7 @@
             `${wechatLabel}：${wechatCount} 条`
         ].join('<br>');
 
-        panelRefs.btnAuto.textContent = state.auto.active ? '一键采集中' : '一键采集';
+
         panelRefs.btnVideo.textContent = state.video.running ? '停止采集微博' : '微博数据';
         panelRefs.btnTopic.textContent = state.topic.running ? '停止采集话题' : '微博话题&热搜';
         panelRefs.btnCctv.textContent = state.cctv.running ? '停止采集央视频' : '央视频数据';
@@ -1736,114 +1720,10 @@
         if (panelRefs.shadow.activeElement !== panelRefs.rangeEndInput) {
             panelRefs.rangeEndInput.value = state.collectRangeEnd || buildDefaultCollectRange().endValue;
         }
-        runAutoSequenceTick(state);
+
     }
 
-    const AUTO_SEQUENCE = ['video', 'topic', 'cctv', 'wechat'];
-    const AUTO_WAIT_MS = 5000;
 
-    function isActionRunning(action, state) {
-        if (action === 'video') return !!state.video.running;
-        if (action === 'topic') return !!state.topic.running;
-        if (action === 'cctv') {
-            return !!state.cctv.running && state.cctv.step !== 'idle';
-        }
-        return false;
-    }
-
-    function startAutoAction(action) {
-        if (action === 'video') {
-            queueStartAndGotoTop('video');
-            return;
-        }
-        if (action === 'topic') {
-            queueStartAndGotoTop('topic');
-            return;
-        }
-        if (action === 'cctv') {
-            onCctvToggleClick();
-            return;
-        }
-        if (action === 'wechat') {
-            onWechatImportClick();
-        }
-    }
-
-    function advanceAutoStep(state) {
-        state.auto.index += 1;
-        state.auto.current = '';
-        state.auto.requested = false;
-        state.auto.started = false;
-        state.auto.wechatDone = false;
-        state.auto.waitUntil = Date.now() + AUTO_WAIT_MS;
-        saveState(state);
-    }
-
-    function runAutoSequenceTick(state) {
-        if (!state.auto.active) return;
-        if (state.auto.waitUntil && Date.now() < state.auto.waitUntil) return;
-
-        if (!state.auto.current) {
-            state.auto.current = AUTO_SEQUENCE[state.auto.index] || '';
-            state.auto.requested = false;
-            state.auto.started = false;
-            state.auto.wechatDone = false;
-            saveState(state);
-        }
-
-        if (!state.auto.current) {
-            state.auto.active = false;
-            state.auto.requested = false;
-            state.auto.started = false;
-            state.auto.waitUntil = 0;
-            saveState(state);
-            showToast('一键采集完成');
-            return;
-        }
-
-        if (typeof state.auto.requested !== 'boolean') {
-            state.auto.requested = false;
-        }
-
-        const action = state.auto.current;
-
-        // 先“发起启动”，确保跳转/启动真正发生后，再进入下一步
-        if (!state.auto.requested) {
-            state.auto.requested = true;
-            if (action === 'wechat') {
-                state.auto.wechatDone = false;
-                // 微信导入的“开始”就是弹出文件选择框
-                state.auto.started = true;
-            } else {
-                // video/topic/cctv 必须等到 running 真的变成 true 才算开始
-                state.auto.started = false;
-            }
-            saveState(state);
-            startAutoAction(action);
-            return;
-        }
-
-        // 已经发起过启动，但还没真正开始跑：一直等到 running 变 true
-        if (!state.auto.started) {
-            if (isActionRunning(action, state)) {
-                state.auto.started = true;
-                saveState(state);
-            }
-            return;
-        }
-
-        // 已经开始：等待彻底完成后才进入下一步
-        if (action === 'wechat') {
-            if (state.auto.wechatDone) {
-                advanceAutoStep(state);
-            }
-            return;
-        }
-
-        if (!isActionRunning(action, state)) {
-            advanceAutoStep(state);
-        }
-    }
 
     function bumpPendingStartToken(state) {
         state._pendingStartToken = (state._pendingStartToken || 0) + 1;
@@ -1851,13 +1731,6 @@
 
     function stopAllCollecting() {
         const state = loadState();
-        state.auto.active = false;
-        state.auto.index = 0;
-        state.auto.current = '';
-        state.auto.requested = false;
-        state.auto.started = false;
-        state.auto.waitUntil = 0;
-        state.auto.wechatDone = false;
 
         state.topic.running = false;
         state.topic.step = 'idle';
@@ -1943,24 +1816,6 @@
         queueStartAndGotoTop('video');
     }
 
-    function onAutoCollectClick() {
-        const state = loadState();
-        if (state.auto.active) {
-            stopAllCollecting();
-            showToast('已停止一键采集');
-            return;
-        }
-        state.auto.active = true;
-        state.auto.index = 0;
-        state.auto.current = '';
-        state.auto.requested = false;
-        state.auto.started = false;
-        state.auto.waitUntil = 0;
-        state.auto.wechatDone = false;
-        saveState(state);
-        showToast('一键采集已开始');
-    }
-
     function onCctvToggleClick() {
         const state = loadState();
         if (state.cctv.running) {
@@ -1982,11 +1837,11 @@
         runCctvListStep();
     }
 
+
     function onWechatImportClick() {
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = '.csv,text/csv';
-        let fileSelected = false;
 
         // 需要挂到 DOM 上，才能可靠触发 blur/cancel 检测
         input.style.position = 'fixed';
@@ -1994,15 +1849,8 @@
         document.body.appendChild(input);
 
         input.onchange = () => {
-            fileSelected = true;
             const file = input.files && input.files[0];
             if (!file) {
-                // 用户取消了选择，标记为完成
-                const state = loadState();
-                if (state.auto.active && state.auto.current === 'wechat') {
-                    state.auto.wechatDone = true;
-                    saveState(state);
-                }
                 input.remove();
                 return;
             }
@@ -2010,22 +1858,9 @@
             input.remove();
         };
 
-        // 检测用户取消文件选择（通过blur事件）
-        input.addEventListener('blur', () => {
-            setTimeout(() => {
-                if (!fileSelected && document.body.contains(input)) {
-                    const state = loadState();
-                    if (state.auto.active && state.auto.current === 'wechat') {
-                        state.auto.wechatDone = true;
-                        saveState(state);
-                    }
-                    input.remove();
-                }
-            }, 500);
-        });
-
         input.click();
     }
+
 
     createHubPanel();
     resumeTopicIfNeeded();
