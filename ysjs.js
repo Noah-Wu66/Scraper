@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.18
-// @description  话题30天数据 + 用户微博数据，统一面板导出表格（单Sheet）
+// @version      1.2.19
+// @description  话题30天数据 + 用户微博数据，统一面板导出表格（多Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
 // @match        https://m.s.weibo.com/*
@@ -13,7 +13,6 @@
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_deleteValue
 // ==/UserScript==
 
 (function () {
@@ -107,15 +106,6 @@
                 vids: [],
                 results: []
             },
-            auto: {
-                active: false,
-                index: 0,
-                current: '',
-                requested: false,
-                started: false,
-                waitUntil: 0,
-                wechatDone: false
-            },
             _pendingStart: null,
             _pendingStartToken: 0,
             overviewRange: DEFAULT_OVERVIEW_RANGE,
@@ -167,8 +157,7 @@
             topic: { ...base.topic, ...(data.topic || {}) },
             video: { ...base.video, ...(data.video || {}) },
             wechat: { ...base.wechat, ...(data.wechat || {}) },
-            cctv: { ...base.cctv, ...(data.cctv || {}) },
-            auto: { ...base.auto, ...(data.auto || {}) }
+            cctv: { ...base.cctv, ...(data.cctv || {}) }
         };
         state.overviewRange = data.overviewRange || base.overviewRange;
         const range = normalizeCollectRange(data.collectRangeStart, data.collectRangeEnd);
@@ -192,17 +181,10 @@
         }
     }
 
-    function clearState() {
-        if (typeof GM_deleteValue === 'function') {
-            GM_deleteValue(STORAGE_KEY);
-        } else {
-            localStorage.removeItem(STORAGE_KEY);
-        }
-    }
 
     function parseCount(text) {
         if (!text) return 0;
-        const s = String(text).replace(/\s+/g, '').trim();
+        const s = String(text).replace(/\s+/g, '').replace(/[,\uFF0C]/g, '').trim();
         if (s === '转发' || s === '评论' || s === '赞') return 0;
         const m = s.match(/([\d.]+)(万|亿)?/);
         if (!m) return 0;
@@ -213,14 +195,6 @@
         return Math.round(num);
     }
 
-    function escapeXml(str) {
-        if (!str && str !== 0) return '';
-        return String(str)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
-    }
 
     function showToast(msg) {
         const id = 'weibo-scraper-toast';
@@ -252,7 +226,8 @@
     }
 
     function isVerificationVisible() {
-        const textHit = /验证码|安全验证|安全校验|拖动滑块|请完成验证|访问过于频繁|操作频繁|请求过于频繁|系统繁忙|请稍后再试|访问异常|风险提示|账号异常/.test(document.body ? document.body.textContent : '');
+        const text = document.body ? document.body.textContent : '';
+        const textHit = /验证码|安全验证|安全校验|拖动滑块|请完成验证|访问过于频繁|操作频繁|请求过于频繁|访问异常|风险提示|账号异常/.test(text);
         const elHit = document.querySelector(
             '.geetest_holder,.geetest_panel,.yidun_panel,.yidun_popup,.captcha,[id*="captcha"],[class*="captcha"],iframe[src*="captcha"],iframe[src*="geetest"],iframe[src*="yidun"]'
         );
@@ -289,7 +264,6 @@
             const anyTime = card.querySelector('.time');
             timeStr = anyTime ? anyTime.textContent.trim() : '';
         }
-        if (/^\d{1,2}:\d{2}$/.test(timeStr)) return '';
         return timeStr;
     }
 
@@ -376,7 +350,8 @@
 
     function findAllTopicsInPage(state) {
         const set = new Set();
-        let reachedLimit = false;
+        let belowStartCount = 0;
+        let inRangeCount = 0;
         const range = getCollectRange(state);
         const cards = Array.from(document.querySelectorAll('.card'));
         for (const card of cards) {
@@ -386,7 +361,7 @@
                 const timeDate = parseTimeToDate(timeStr);
                 if (timeDate) {
                     if (timeDate < range.start) {
-                        reachedLimit = true;
+                        belowStartCount += 1;
                         card.dataset.topicScanned = 'true';
                         continue;
                     }
@@ -394,6 +369,7 @@
                         card.dataset.topicScanned = 'true';
                         continue;
                     }
+                    inRangeCount += 1;
                 }
             } else {
                 card.dataset.topicScanned = 'true';
@@ -402,7 +378,10 @@
             collectTopicsFromNode(card, set);
             card.dataset.topicScanned = 'true';
         }
-        return { topics: Array.from(set), reachedLimit };
+        return {
+            topics: Array.from(set),
+            reachedLimitCandidate: belowStartCount >= 5 && inRangeCount === 0
+        };
     }
 
     async function scrollAndCollectTopics(state) {
@@ -412,17 +391,22 @@
         let lastCardCount = 0;
         let lastHeight = 0;
         let noGrow = 0;
+        let limitHitStreak = 0;
 
         while (state.topic.running) {
             await waitForAntiBotClear();
             const scan = findAllTopicsInPage(state);
+            let addedThisRound = 0;
             for (const name of scan.topics) {
                 if (state.topic.topics.includes(name)) continue;
                 state.topic.topics.push(name);
+                addedThisRound += 1;
             }
             saveState(state);
 
-            if (scan.reachedLimit) break;
+            if (scan.reachedLimitCandidate && addedThisRound === 0) limitHitStreak += 1;
+            else limitHitStreak = 0;
+            if (limitHitStreak >= 2) break;
 
             const cardCount = document.querySelectorAll('.card').length;
             const height = document.body.scrollHeight;
@@ -464,7 +448,7 @@
         const header = document.querySelector('.topic-header-wrap .topic .text');
         if (header && header.textContent) return normalizeTopicName(header.textContent);
         const q = new URLSearchParams(location.search).get('q') || '';
-        return normalizeTopicName(decodeURIComponent(q));
+        return normalizeTopicName(q);
     }
 
     function getHostFromDetailPage() {
@@ -869,7 +853,8 @@
 
     async function collectVideoData(state) {
         const cards = document.querySelectorAll('.card9');
-        let reachedLimit = false;
+        let belowStartCount = 0;
+        let addedCount = 0;
         const existingLinks = new Set(state.video.results.map(r => r.链接));
         const range = getCollectRange(state);
 
@@ -884,7 +869,8 @@
 
             if (timeDate) {
                 if (timeDate < range.start) {
-                    reachedLimit = true;
+                    belowStartCount += 1;
+                    card.dataset.scraped = 'true';
                     continue;
                 }
                 if (timeDate > range.end) {
@@ -929,22 +915,29 @@
                 视频播放量: playCount
             });
 
+            addedCount += 1;
             card.dataset.scraped = 'true';
             existingLinks.add(link);
         }
 
-        return reachedLimit;
+        return {
+            reachedLimitCandidate: belowStartCount >= 5 && addedCount === 0,
+            addedCount
+        };
     }
 
     async function scrollAndCollectVideos() {
         let state = loadState();
+        let limitHitStreak = 0;
         while (state.video.running) {
             await waitForAntiBotClear();
-            const reachedLimit = await collectVideoData(state);
+            const scan = await collectVideoData(state);
             saveState(state);
 
-            if (reachedLimit) {
-                showToast('已到时间范围，微博采集结束');
+            if (scan.reachedLimitCandidate) limitHitStreak += 1;
+            else limitHitStreak = 0;
+            if (limitHitStreak >= 2) {
+                showToast('连续两轮超出时间范围，微博采集结束');
                 break;
             }
 
@@ -1130,6 +1123,8 @@
             else noNew = 0;
             lastCount = state.cctv.vids.length;
 
+            if (noNew >= 3) break;
+
             rounds += 1;
             if (rounds >= 10) break;
 
@@ -1206,18 +1201,6 @@
 
         const info = parseCctvDetailInfo();
         const range = getCollectRange(state);
-        const dateOnly = info.date ? parseDateOnlyString(info.date) : null;
-        if (dateOnly) {
-            const startDay = new Date(range.start.getFullYear(), range.start.getMonth(), range.start.getDate());
-            if (dateOnly < startDay) {
-                state.cctv.running = false;
-                saveState(state);
-                showToast('已超出时间范围，央视频采集结束');
-                location.href = CCTV_LIST_URL;
-                return;
-            }
-        }
-
         const within = info.date
             ? isDateOnlyWithinRange(info.date, range.start, range.end)
             : true;
@@ -1336,12 +1319,7 @@
                 const results = buildWechatRowsFromCsv(text);
                 const state = loadState();
                 state.wechat.results = results;
-                if (state.auto.active && state.auto.current === 'wechat') {
-                    state.auto.wechatDone = true;
-                    saveState(state);
-                } else {
-                    saveState(state);
-                }
+                saveState(state);
                 showToast(`微信导入完成：${results.length}条`);
             } catch (e) {
                 console.error('微信CSV解析失败', e);
@@ -1733,23 +1711,6 @@
         state._pendingStartToken = (state._pendingStartToken || 0) + 1;
     }
 
-    function stopAllCollecting() {
-        const state = loadState();
-
-        state.topic.running = false;
-        state.topic.step = 'idle';
-        delete state.topic._pauseCheckpoint;
-
-        state.video.running = false;
-        delete state.video._pauseCheckpoint;
-
-        state.cctv.running = false;
-        state.cctv.step = 'idle';
-
-        state._pendingStart = null;
-        bumpPendingStartToken(state);
-        saveState(state);
-    }
 
     function queueStartAndGotoTop(action) {
         const state = loadState();
@@ -1805,9 +1766,6 @@
         queueStartAndGotoTop('topic');
     }
 
-    function isOnUserPage() {
-        return location.hostname === 'm.weibo.cn' && location.pathname.startsWith('/u/');
-    }
 
     function onVideoToggleClick() {
         const state = loadState();
