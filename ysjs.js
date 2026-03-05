@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.17
+// @version      1.2.18
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（单Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -20,12 +20,14 @@
     'use strict';
 
     const STORAGE_KEY = '__weibo_scraper_hub_v1';
-    const SCROLL_WAIT_MS = 2800;
-    const TOPIC_JUMP_DELAY_MIN = 3000;
-    const TOPIC_JUMP_DELAY_MAX = 8000;
+    const SCROLL_WAIT_MS = 1800;
+    const TOPIC_JUMP_DELAY_MIN = 1200;
+    const TOPIC_JUMP_DELAY_MAX = 2600;
     const TOPIC_BATCH_SIZE = 5;
-    const TOPIC_BATCH_REST_MIN = 30000;
-    const TOPIC_BATCH_REST_MAX = 60000;
+    const TOPIC_BATCH_REST_MIN = 8000;
+    const TOPIC_BATCH_REST_MAX = 15000;
+    const TOPIC_SCROLL_BREAK_REST_MIN = 6000;
+    const TOPIC_SCROLL_BREAK_REST_MAX = 10000;
     const NO_NEW_RETRY_LIMIT = 6;
     const DEFAULT_COLLECT_RANGE_DAYS = 7;
     const DEFAULT_OVERVIEW_RANGE = '30d';
@@ -442,8 +444,8 @@
                     if (diffDays >= 5) {
                         state.topic._pauseCheckpoint = oldest.getTime();
                         saveState(state);
-                        showToast('已翻过5天，休息20-30秒后继续');
-                        await sleepRange(20000, 30000);
+                        showToast('已翻过5天，休息6-10秒后继续');
+                        await sleepRange(TOPIC_SCROLL_BREAK_REST_MIN, TOPIC_SCROLL_BREAK_REST_MAX);
                         state = loadState();
                         if (!state.topic.running) break;
                     }
@@ -532,15 +534,17 @@
 
     async function ensureOverviewRangeSelected(range) {
         await waitFor(() => !!findOverviewRangeTab(range), 8000);
-        const before = JSON.stringify(getOverviewMetricsRaw());
-        if (!isOverviewRangeActive(range)) {
+        const wasActive = isOverviewRangeActive(range);
+        if (!wasActive) {
             const tab = findOverviewRangeTab(range);
             if (tab) tab.click();
+            await waitFor(() => isOverviewRangeActive(range), 8000);
         }
-        await waitFor(() => isOverviewRangeActive(range), 8000);
-        await waitFor(() => JSON.stringify(getOverviewMetricsRaw()) !== before, 8000);
+        await waitFor(() => {
+            const metrics = getOverviewMetricsRaw();
+            return !!metrics && Object.keys(metrics).length > 0;
+        }, 2500);
     }
-
     function pushResultFromDetailPage(state) {
         const topic = getTopicFromDetailPage();
         const host = getHostFromDetailPage();
@@ -596,12 +600,12 @@
             } else {
                 // 每采集 TOPIC_BATCH_SIZE 个话题后长休息
                 if (state.topic.idx > 0 && state.topic.idx % TOPIC_BATCH_SIZE === 0) {
-                    showToast(`已采集${state.topic.idx}个话题，休息30-60秒防风控`);
+                    showToast(`已采集${state.topic.idx}个话题，休息8-15秒防风控`);
                     await sleepRange(TOPIC_BATCH_REST_MIN, TOPIC_BATCH_REST_MAX);
                     state = loadState();
                     if (!state.topic.running) return;
                 }
-                // 话题之间随机延迟3-8秒
+                // 话题之间随机延迟1.2-2.6秒
                 await sleepRange(TOPIC_JUMP_DELAY_MIN, TOPIC_JUMP_DELAY_MAX);
                 location.href = buildDetailUrl(state.topic.topics[state.topic.idx]);
             }
