@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.19
+// @version      1.2.20
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（多Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -760,6 +760,16 @@
         return date >= startDay && date <= endDay;
     }
 
+    function compareDateOnlyToRange(dateStr, start, end) {
+        const date = parseDateOnlyString(dateStr);
+        if (!date) return 'unknown';
+        const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+        const endDay = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+        if (date < startDay) return 'before';
+        if (date > endDay) return 'after';
+        return 'within';
+    }
+
     function normalizeWeiboText(raw, removeFullTextHint) {
         if (!raw && raw !== 0) return '';
         let text = String(raw);
@@ -1201,11 +1211,19 @@
 
         const info = parseCctvDetailInfo();
         const range = getCollectRange(state);
-        const within = info.date
-            ? isDateOnlyWithinRange(info.date, range.start, range.end)
-            : true;
+        const rangeStatus = info.date
+            ? compareDateOnlyToRange(info.date, range.start, range.end)
+            : 'unknown';
 
-        if (within && info.title) {
+        if (rangeStatus === 'before') {
+            state.cctv.running = false;
+            saveState(state);
+            showToast(`已到开始时间之前，央视频采集停止：${state.cctv.results.length}条`);
+            location.href = CCTV_LIST_URL;
+            return;
+        }
+
+        if (rangeStatus === 'within' && info.title) {
             state.cctv.results.push({
                 序号: state.cctv.results.length + 1,
                 标题: info.title,
