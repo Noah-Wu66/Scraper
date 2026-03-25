@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.29
+// @version      1.2.30
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（多Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -578,6 +578,94 @@
         return oldest;
     }
 
+    function createListProgressTracker() {
+        return {
+            lastSnapshot: '',
+            repeatCount: 0
+        };
+    }
+
+    function updateListProgressTracker(tracker, snapshot) {
+        const nextSnapshot = String(snapshot ?? '');
+        if (tracker.lastSnapshot === nextSnapshot) tracker.repeatCount += 1;
+        else tracker.repeatCount = 0;
+        tracker.lastSnapshot = nextSnapshot;
+        return tracker.repeatCount;
+    }
+
+    async function maybePauseWeiboListByOldestDate(state, config) {
+        const pause = config.pauseByDays;
+        if (!pause) return state;
+        const cards = Array.from(document.querySelectorAll(pause.cardSelector));
+        const oldest = getOldestPublishDate(cards);
+        if (!oldest) return state;
+        const branch = state[config.stateKey];
+        const oldestTime = oldest.getTime();
+        const checkpoint = branch._pauseCheckpoint;
+        if (typeof checkpoint !== 'number') {
+            branch._pauseCheckpoint = oldestTime;
+            saveState(state);
+            return state;
+        }
+        const diffDays = Math.floor((checkpoint - oldestTime) / (24 * 60 * 60 * 1000));
+        if (diffDays < pause.days) return state;
+        branch._pauseCheckpoint = oldestTime;
+        saveState(state);
+        showToast(pause.toast);
+        await sleepRange(pause.minMs, pause.maxMs);
+        return loadState();
+    }
+
+    async function runWeiboListCollector(config) {
+        let state = loadState();
+        const runtime = typeof config.createRuntime === 'function' ? config.createRuntime(state) : {};
+        while (state[config.stateKey].running) {
+            const scan = await config.scan(state, runtime);
+            saveState(state);
+
+            if (typeof config.shouldStopAfterScan === 'function') {
+                const stopSignal = config.shouldStopAfterScan(state, scan, runtime);
+                if (stopSignal) {
+                    if (stopSignal.toast) showToast(stopSignal.toast);
+                    break;
+                }
+            }
+
+            if (typeof config.getProgressSnapshot === 'function') {
+                runtime.progressTracker = runtime.progressTracker || createListProgressTracker();
+                const repeatCount = updateListProgressTracker(
+                    runtime.progressTracker,
+                    config.getProgressSnapshot(state, scan, runtime)
+                );
+                if (typeof config.shouldStopOnStall === 'function') {
+                    const stallSignal = config.shouldStopOnStall(state, scan, runtime, repeatCount);
+                    if (stallSignal) {
+                        if (stallSignal.toast) showToast(stallSignal.toast);
+                        break;
+                    }
+                }
+            }
+
+            state = await maybePauseWeiboListByOldestDate(state, config);
+            if (!state[config.stateKey].running) break;
+
+            await config.scroll(state, scan, runtime);
+            await config.waitAfterScroll(state, scan, runtime);
+
+            state = loadState();
+            if (typeof config.onStateReload === 'function') {
+                config.onStateReload(state, runtime);
+            }
+        }
+
+        state = loadState();
+        if (typeof config.finish === 'function') {
+            const nextState = await config.finish(state, runtime);
+            return nextState || loadState();
+        }
+        return state;
+    }
+
     // ===== 话题采集逻辑 =====
     function normalizeTopicName(name) {
         if (!name) return '';
@@ -653,71 +741,30 @@
         };
     }
 
-    async function scrollAndCollectTopics(state) {
-        state.topic.step = 'collecting';
-        saveState(state);
-
-        let lastCardCount = 0;
-        let lastHeight = 0;
-        let noGrow = 0;
-        let limitHitStreak = 0;
-        let knownTopics = new Set(state.topic.topics.map(item => getTopicQueueItemName(item)));
-
-        while (state.topic.running) {
-            const scan = findAllTopicsInPage(state);
-            let addedThisRound = 0;
-            for (const item of scan.topics) {
-                const name = getTopicQueueItemName(item);
-                if (!name || knownTopics.has(name)) continue;
-                state.topic.topics.push({
-                    name,
-                    sourcePublishTime: getTopicQueueItemSourceTime(item)
-                });
-                knownTopics.add(name);
-                addedThisRound += 1;
-            }
-            saveState(state);
-
-            if (scan.reachedLimitCandidate && addedThisRound === 0) limitHitStreak += 1;
-            else limitHitStreak = 0;
-            if (limitHitStreak >= 2) break;
-
-            const cardCount = document.querySelectorAll('.card').length;
-            const height = document.body.scrollHeight;
-            if (cardCount === lastCardCount && height === lastHeight) noGrow += 1;
-            else noGrow = 0;
-            lastCardCount = cardCount;
-            lastHeight = height;
-
-            if (noGrow >= NO_NEW_RETRY_LIMIT) break;
-
-            const oldest = getOldestPublishDate(Array.from(document.querySelectorAll('.card')));
-            if (oldest) {
-                const checkpoint = state.topic._pauseCheckpoint;
-                if (typeof checkpoint !== 'number') {
-                    state.topic._pauseCheckpoint = oldest.getTime();
-                    saveState(state);
-                } else {
-                    const diffDays = Math.floor((checkpoint - oldest.getTime()) / (24 * 60 * 60 * 1000));
-                    if (diffDays >= 5) {
-                        state.topic._pauseCheckpoint = oldest.getTime();
-                        saveState(state);
-                        showToast('已翻过5天，休息3-5.5秒后继续');
-                        await sleepRange(TOPIC_SCROLL_BREAK_REST_MIN, TOPIC_SCROLL_BREAK_REST_MAX);
-                        state = loadState();
-                        knownTopics = new Set(state.topic.topics.map(item => getTopicQueueItemName(item)));
-                        if (!state.topic.running) break;
-                    }
-                }
-            }
-
-            await topicScrollToBottom();
-            await sleepHumanLike(TOPIC_SCROLL_WAIT_MS, 350);
-            state = loadState();
-            knownTopics = new Set(state.topic.topics.map(item => getTopicQueueItemName(item)));
+    function scanTopicListPage(state, runtime) {
+        const scan = findAllTopicsInPage(state);
+        let addedThisRound = 0;
+        runtime.knownTopics = runtime.knownTopics || new Set();
+        for (const item of scan.topics) {
+            const name = getTopicQueueItemName(item);
+            if (!name || runtime.knownTopics.has(name)) continue;
+            state.topic.topics.push({
+                name,
+                sourcePublishTime: getTopicQueueItemSourceTime(item)
+            });
+            runtime.knownTopics.add(name);
+            addedThisRound += 1;
         }
+        if (scan.reachedLimitCandidate && addedThisRound === 0) runtime.limitHitStreak += 1;
+        else runtime.limitHitStreak = 0;
+        return {
+            ...scan,
+            addedThisRound
+        };
+    }
 
-        return loadState();
+    async function scrollAndCollectTopics() {
+        return runWeiboListCollector(getWeiboListCollectorConfig('topic'));
     }
 
     function getTopicFromDetailPage() {
@@ -927,7 +974,7 @@
         if (!isOnTargetUserPage()) return;
         state.topic.step = 'collecting';
         saveState(state);
-        const s = await scrollAndCollectTopics(state);
+        const s = await scrollAndCollectTopics();
         if (s.topic.running && s.topic.topics.length > 0) {
             const target = s.topic.topics[s.topic.idx] || s.topic.topics[0];
             location.href = buildDetailUrl(getTopicQueueItemName(target));
@@ -1248,66 +1295,166 @@
         };
     }
 
-    async function scrollAndCollectVideos() {
-        let state = loadState();
-        while (state.video.running) {
-            const scan = await collectVideoData(state);
-            saveState(state);
-
-            if (scan.reachedStartBoundary) {
-                showToast('已超过开始时间，微博采集结束');
-                break;
-            }
-
-            const currentCardCount = document.querySelectorAll('.card9').length;
-            state.video._lastCardCount = state.video._lastCardCount || 0;
-            state.video._noNewRetry = state.video._noNewRetry || 0;
-            if (currentCardCount === state.video._lastCardCount) {
-                state.video._noNewRetry++;
-                if (state.video._noNewRetry > 5) {
-                    showToast('没有更多内容，微博采集结束');
-                    break;
-                }
-            } else {
-                state.video._noNewRetry = 0;
-                state.video._lastCardCount = currentCardCount;
-            }
-            saveState(state);
-
-            const oldest = getOldestPublishDate(Array.from(document.querySelectorAll('.card9')));
-            if (oldest) {
-                const checkpoint = state.video._pauseCheckpoint;
-                if (typeof checkpoint !== 'number') {
-                    state.video._pauseCheckpoint = oldest.getTime();
-                    saveState(state);
-                } else {
-                    const diffDays = Math.floor((checkpoint - oldest.getTime()) / (24 * 60 * 60 * 1000));
-                    if (diffDays >= 5) {
-                        state.video._pauseCheckpoint = oldest.getTime();
-                        saveState(state);
-                        showToast('已翻过5天，休息20-30秒后继续');
-                        await sleepRange(20000, 30000);
-                        state = loadState();
-                        if (!state.video.running) break;
+    function getWeiboListCollectorConfig(action) {
+        if (action === 'topic') {
+            return {
+                action,
+                stateKey: 'topic',
+                stopToast: '已停止话题采集',
+                overlay: {
+                    task: '微博话题&热搜',
+                    action: '正在开始采集',
+                    detail: '正在准备扫描微博列表。'
+                },
+                prepareState(state) {
+                    state.topic.running = true;
+                    state.topic.idx = 0;
+                    state.topic.topics = [];
+                    state.topic.results = [];
+                    state.topic.step = 'collecting';
+                    delete state.topic._pauseCheckpoint;
+                },
+                createRuntime(state) {
+                    return {
+                        knownTopics: new Set(state.topic.topics.map(item => getTopicQueueItemName(item))),
+                        limitHitStreak: 0,
+                        progressTracker: createListProgressTracker()
+                    };
+                },
+                scan: scanTopicListPage,
+                shouldStopAfterScan(state, scan, runtime) {
+                    return runtime.limitHitStreak >= 2 ? {} : null;
+                },
+                getProgressSnapshot() {
+                    return `${document.querySelectorAll('.card').length}|${document.body.scrollHeight}`;
+                },
+                shouldStopOnStall(state, scan, runtime, repeatCount) {
+                    return repeatCount >= NO_NEW_RETRY_LIMIT ? {} : null;
+                },
+                pauseByDays: {
+                    cardSelector: '.card',
+                    days: 5,
+                    minMs: TOPIC_SCROLL_BREAK_REST_MIN,
+                    maxMs: TOPIC_SCROLL_BREAK_REST_MAX,
+                    toast: '已翻过5天，休息3-5.5秒后继续'
+                },
+                scroll() {
+                    return topicScrollToBottom();
+                },
+                waitAfterScroll() {
+                    return sleepHumanLike(TOPIC_SCROLL_WAIT_MS, 350);
+                },
+                onStateReload(state, runtime) {
+                    runtime.knownTopics = new Set(state.topic.topics.map(item => getTopicQueueItemName(item)));
+                },
+                afterRun(state) {
+                    if (state.topic.running && state.topic.topics.length > 0) {
+                        showBusyOverlay('微博话题&热搜', '正在打开首个话题详情', '准备进入话题详情页继续采集。');
+                        location.href = buildDetailUrl(getTopicQueueItemName(state.topic.topics[0]));
+                    } else if (state.topic.topics.length === 0) {
+                        showToast('没找到话题');
+                        const latest = loadState();
+                        latest.topic.running = false;
+                        saveState(latest);
+                        hideBusyOverlay();
                     }
+                },
+                onStop(state) {
+                    state.topic.step = 'idle';
                 }
-            }
-
-            await humanScrollToBottom();
-            await sleepHumanLike(2800, 1000);
-            state = loadState();
+            };
         }
 
-        state = loadState();
-        const stoppedByUser = !state.video.running;
-        state.video.running = false;
-        delete state.video._lastCardCount;
-        delete state.video._noNewRetry;
-        delete state.video._pauseCheckpoint;
+        if (action === 'video') {
+            return {
+                action,
+                stateKey: 'video',
+                stopToast: '已停止微博采集',
+                overlay: {
+                    task: '微博数据',
+                    action: '正在开始采集',
+                    detail: '正在准备读取当前微博页面。'
+                },
+                prepareState(state) {
+                    state.video.running = true;
+                    state.video.results = [];
+                    delete state.video._pauseCheckpoint;
+                    delete state.video._lastCardCount;
+                    delete state.video._noNewRetry;
+                },
+                createRuntime() {
+                    return {
+                        progressTracker: createListProgressTracker()
+                    };
+                },
+                scan: collectVideoData,
+                shouldStopAfterScan(state, scan) {
+                    return scan.reachedStartBoundary ? { toast: '已超过开始时间，微博采集结束' } : null;
+                },
+                getProgressSnapshot() {
+                    return document.querySelectorAll('.card9').length;
+                },
+                shouldStopOnStall(state, scan, runtime, repeatCount) {
+                    return repeatCount > 5 ? { toast: '没有更多内容，微博采集结束' } : null;
+                },
+                pauseByDays: {
+                    cardSelector: '.card9',
+                    days: 5,
+                    minMs: 20000,
+                    maxMs: 30000,
+                    toast: '已翻过5天，休息20-30秒后继续'
+                },
+                scroll() {
+                    return humanScrollToBottom();
+                },
+                waitAfterScroll() {
+                    return sleepHumanLike(2800, 1000);
+                },
+                async finish(state) {
+                    const stoppedByUser = !state.video.running;
+                    state.video.running = false;
+                    delete state.video._lastCardCount;
+                    delete state.video._noNewRetry;
+                    delete state.video._pauseCheckpoint;
+                    saveState(state);
+                    if (!stoppedByUser) {
+                        showToast(`微博采集完成：${state.video.results.length}条`);
+                    }
+                    return state;
+                }
+            };
+        }
+
+        return null;
+    }
+
+    function startWeiboListCollection(action) {
+        const config = getWeiboListCollectorConfig(action);
+        if (!config) return Promise.resolve(loadState());
+        const state = loadState();
+        config.prepareState(state);
         saveState(state);
-        if (!stoppedByUser) {
-            showToast(`微博采集完成：${state.video.results.length}条`);
+        showBusyOverlay(config.overlay.task, config.overlay.action, config.overlay.detail);
+        const task = runWeiboListCollector(config);
+        if (typeof config.afterRun === 'function') {
+            task.then((nextState) => {
+                config.afterRun(nextState);
+            });
         }
+        return task;
+    }
+
+    function stopWeiboListCollection(action) {
+        const config = getWeiboListCollectorConfig(action);
+        if (!config) return;
+        const state = loadState();
+        state[config.stateKey].running = false;
+        if (typeof config.onStop === 'function') {
+            config.onStop(state);
+        }
+        saveState(state);
+        showToast(config.stopToast);
+        hideBusyOverlay();
     }
 
     // ===== 央视频采集逻辑 =====
@@ -2116,47 +2263,17 @@
     }
 
     function startTopicCollect() {
-        const state = loadState();
-        state.topic.running = true;
-        state.topic.idx = 0;
-        state.topic.topics = [];
-        state.topic.results = [];
-        state.topic.step = 'collecting';
-        delete state.topic._pauseCheckpoint;
-        saveState(state);
-        showBusyOverlay('微博话题&热搜', '正在开始采集', '正在准备扫描微博列表。');
-        scrollAndCollectTopics(state).then(s => {
-            if (s.topic.running && s.topic.topics.length > 0) {
-                showBusyOverlay('微博话题&热搜', '正在打开首个话题详情', '准备进入话题详情页继续采集。');
-                location.href = buildDetailUrl(getTopicQueueItemName(s.topic.topics[0]));
-            } else if (s.topic.topics.length === 0) {
-                showToast('没找到话题');
-                const latest = loadState();
-                latest.topic.running = false;
-                saveState(latest);
-                hideBusyOverlay();
-            }
-        });
+        startWeiboListCollection('topic');
     }
 
     function startVideoCollect() {
-        const state = loadState();
-        state.video.running = true;
-        state.video.results = [];
-        delete state.video._pauseCheckpoint;
-        saveState(state);
-        showBusyOverlay('微博数据', '正在开始采集', '正在准备读取当前微博页面。');
-        scrollAndCollectVideos();
+        startWeiboListCollection('video');
     }
 
     function onTopicToggleClick() {
         const state = loadState();
         if (state.topic.running) {
-            state.topic.running = false;
-            state.topic.step = 'idle';
-            saveState(state);
-            showToast('已停止话题采集');
-            hideBusyOverlay();
+            stopWeiboListCollection('topic');
             return;
         }
         queueStartAndGotoTop('topic');
@@ -2166,10 +2283,7 @@
     function onVideoToggleClick() {
         const state = loadState();
         if (state.video.running) {
-            state.video.running = false;
-            saveState(state);
-            showToast('已停止微博采集');
-            hideBusyOverlay();
+            stopWeiboListCollection('video');
             return;
         }
         queueStartAndGotoTop('video');
