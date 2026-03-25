@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.22
+// @version      1.2.23
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（多Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -128,6 +128,36 @@
         };
     }
 
+    function isValidTopicQueueItem(item) {
+        return !!(
+            item
+            && typeof item === 'object'
+            && !Array.isArray(item)
+            && typeof item.name === 'string'
+            && item.name.trim()
+            && typeof item.sourcePublishTime === 'string'
+            && item.sourcePublishTime.trim()
+        );
+    }
+
+    function isValidTopicResultItem(item) {
+        return !!(
+            item
+            && typeof item === 'object'
+            && !Array.isArray(item)
+            && typeof item['来源发布时间'] === 'string'
+            && item['来源发布时间'].trim()
+        );
+    }
+
+    function getTopicQueueItemName(item) {
+        return normalizeTopicName(item && typeof item === 'object' ? item.name : '');
+    }
+
+    function getTopicQueueItemSourceTime(item) {
+        return item && typeof item === 'object' ? String(item.sourcePublishTime || '').trim() : '';
+    }
+
     function loadState() {
         const raw = typeof GM_getValue === 'function'
             ? GM_getValue(STORAGE_KEY, null)
@@ -183,6 +213,21 @@
         state.wechat.results = Array.isArray(state.wechat.results) ? state.wechat.results : [];
         state.cctv.vids = Array.isArray(state.cctv.vids) ? state.cctv.vids : [];
         state.cctv.results = Array.isArray(state.cctv.results) ? state.cctv.results : [];
+        const hasLegacyTopicQueue = state.topic.topics.some(item => !isValidTopicQueueItem(item));
+        const hasLegacyTopicResults = state.topic.results.some(item => !isValidTopicResultItem(item));
+        if (hasLegacyTopicQueue || hasLegacyTopicResults) {
+            state.topic = { ...base.topic };
+        } else {
+            state.topic.topics = state.topic.topics.map(item => ({
+                name: getTopicQueueItemName(item),
+                sourcePublishTime: getTopicQueueItemSourceTime(item)
+            }));
+            state.topic.results = state.topic.results.map((item, idx) => ({
+                ...item,
+                '来源发布时间': String(item['来源发布时间']).trim(),
+                序号: idx + 1
+            }));
+        }
         return state;
     }
 
@@ -310,13 +355,31 @@
         return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
     }
 
+    function getCardPublishInfo(card) {
+        const vueCreatedAt = getVueCreatedAt(card);
+        if (vueCreatedAt) {
+            const vueDate = parseVueCreatedAt(vueCreatedAt);
+            if (vueDate) {
+                return {
+                    date: vueDate,
+                    formatted: formatVueCreatedAt(vueCreatedAt)
+                };
+            }
+        }
+        const timeStr = getPublishTimeText(card);
+        const timeDate = parseTimeToDate(timeStr);
+        return {
+            date: timeDate,
+            formatted: timeDate ? parseTimeToAbsolute(timeStr) : ''
+        };
+    }
+
     function getOldestPublishDate(cards) {
         if (!cards || cards.length === 0) return null;
         let oldest = null;
         cards.forEach((card) => {
-            const timeStr = getPublishTimeText(card);
-            if (!timeStr) return;
-            const date = parseTimeToDate(timeStr);
+            const publishInfo = getCardPublishInfo(card);
+            const date = publishInfo.date;
             if (!date) return;
             if (!oldest || date < oldest) oldest = date;
         });
@@ -347,7 +410,7 @@
         return location.hostname === 'm.s.weibo.com' && location.pathname.includes('/vtopic/detail_new');
     }
 
-    function collectTopicsFromNode(node, set) {
+    function collectTopicsFromNode(node, sourcePublishTime, topicsMap) {
         const anchors = Array.from(node.querySelectorAll('a'));
         for (const a of anchors) {
             const t = (a.textContent || '').trim();
@@ -357,43 +420,43 @@
             for (const raw of matches) {
                 const name = normalizeTopicName(raw);
                 if (!name) continue;
-                set.add(name);
+                if (topicsMap.has(name)) continue;
+                topicsMap.set(name, {
+                    name,
+                    sourcePublishTime
+                });
             }
         }
     }
 
     function findAllTopicsInPage(state) {
-        const set = new Set();
+        const topicsMap = new Map();
         let belowStartCount = 0;
         let inRangeCount = 0;
         const range = getCollectRange(state);
         const cards = Array.from(document.querySelectorAll('.card'));
         for (const card of cards) {
             if (card.dataset.topicScanned) continue;
-            const timeStr = getPublishTimeText(card);
-            if (timeStr) {
-                const timeDate = parseTimeToDate(timeStr);
-                if (timeDate) {
-                    if (timeDate < range.start) {
-                        belowStartCount += 1;
-                        card.dataset.topicScanned = 'true';
-                        continue;
-                    }
-                    if (timeDate > range.end) {
-                        card.dataset.topicScanned = 'true';
-                        continue;
-                    }
-                    inRangeCount += 1;
-                }
-            } else {
+            const publishInfo = getCardPublishInfo(card);
+            if (!publishInfo.date || !publishInfo.formatted) {
                 card.dataset.topicScanned = 'true';
                 continue;
             }
-            collectTopicsFromNode(card, set);
+            if (publishInfo.date < range.start) {
+                belowStartCount += 1;
+                card.dataset.topicScanned = 'true';
+                continue;
+            }
+            if (publishInfo.date > range.end) {
+                card.dataset.topicScanned = 'true';
+                continue;
+            }
+            inRangeCount += 1;
+            collectTopicsFromNode(card, publishInfo.formatted, topicsMap);
             card.dataset.topicScanned = 'true';
         }
         return {
-            topics: Array.from(set),
+            topics: Array.from(topicsMap.values()),
             reachedLimitCandidate: belowStartCount >= 5 && inRangeCount === 0
         };
     }
@@ -406,15 +469,19 @@
         let lastHeight = 0;
         let noGrow = 0;
         let limitHitStreak = 0;
-        let knownTopics = new Set(state.topic.topics);
+        let knownTopics = new Set(state.topic.topics.map(item => getTopicQueueItemName(item)));
 
         while (state.topic.running) {
             await waitForAntiBotClear();
             const scan = findAllTopicsInPage(state);
             let addedThisRound = 0;
-            for (const name of scan.topics) {
-                if (knownTopics.has(name)) continue;
-                state.topic.topics.push(name);
+            for (const item of scan.topics) {
+                const name = getTopicQueueItemName(item);
+                if (!name || knownTopics.has(name)) continue;
+                state.topic.topics.push({
+                    name,
+                    sourcePublishTime: getTopicQueueItemSourceTime(item)
+                });
                 knownTopics.add(name);
                 addedThisRound += 1;
             }
@@ -447,7 +514,7 @@
                         showToast('已翻过5天，休息3-5.5秒后继续');
                         await sleepRange(TOPIC_SCROLL_BREAK_REST_MIN, TOPIC_SCROLL_BREAK_REST_MAX);
                         state = loadState();
-                        knownTopics = new Set(state.topic.topics);
+                        knownTopics = new Set(state.topic.topics.map(item => getTopicQueueItemName(item)));
                         if (!state.topic.running) break;
                     }
                 }
@@ -456,7 +523,7 @@
             await topicScrollToBottom();
             await sleepHumanLike(TOPIC_SCROLL_WAIT_MS, 350);
             state = loadState();
-            knownTopics = new Set(state.topic.topics);
+            knownTopics = new Set(state.topic.topics.map(item => getTopicQueueItemName(item)));
         }
 
         return loadState();
@@ -547,11 +614,33 @@
             return !!metrics && Object.keys(metrics).length > 0;
         }, 2500);
     }
-    function pushResultFromDetailPage(state) {
+    function upsertTopicResult(state, row) {
+        const targetName = row['话题名称'] || '';
+        const targetPublishTime = row['来源发布时间'] || '';
+        const index = state.topic.results.findIndex((item) => (
+            item
+            && item['话题名称'] === targetName
+            && item['来源发布时间'] === targetPublishTime
+        ));
+        if (index >= 0) {
+            state.topic.results[index] = {
+                ...state.topic.results[index],
+                ...row
+            };
+        } else {
+            state.topic.results.push(row);
+        }
+        state.topic.results.forEach((item, idx) => {
+            item.序号 = idx + 1;
+        });
+    }
+
+    function pushResultFromDetailPage(state, expectedTopicItem) {
         const topic = getTopicFromDetailPage();
         const host = getHostFromDetailPage();
         const metrics = getOverviewMetricsRaw();
         const hotSearchPeak = getHotSearchPeak();
+        const sourcePublishTime = getTopicQueueItemSourceTime(expectedTopicItem);
 
         const readRaw = metrics['阅读量'] || '';
         const discussRaw = metrics['讨论量'] || '';
@@ -563,12 +652,12 @@
             话题阅读量: parseCount(readRaw),
             话题讨论量: parseCount(discussRaw),
             热搜记录: hotSearchPeak,
-            抓取时间: nowStr()
+            抓取时间: nowStr(),
+            来源发布时间: sourcePublishTime
         };
 
         if (row.话题主持人 !== '央视军事') return null;
-        state.topic.results.push(row);
-        state.topic.results.forEach((r, i) => r.序号 = i + 1);
+        upsertTopicResult(state, row);
         return row;
     }
 
@@ -580,12 +669,26 @@
             await waitForAntiBotClear();
             state = loadState();
             if (!state.topic.running) return;
+            const expectedTopicItem = state.topic.topics[state.topic.idx];
+            const expectedTopicName = getTopicQueueItemName(expectedTopicItem);
+            const currentTopicName = getTopicFromDetailPage();
+            if (!currentTopicName) {
+                throw new Error('未识别到当前话题');
+            }
+            if (!expectedTopicName) {
+                throw new Error('当前话题队列无效');
+            }
+            if (currentTopicName !== expectedTopicName) {
+                location.href = buildDetailUrl(expectedTopicName);
+                return;
+            }
             await ensureOverviewRangeSelected(state.overviewRange || DEFAULT_OVERVIEW_RANGE);
             await sleepHumanLike(220, 140);
 
             state = loadState();
             if (!state.topic.running) return;
-            const row = pushResultFromDetailPage(state);
+            const currentTopicItem = state.topic.topics[state.topic.idx];
+            const row = pushResultFromDetailPage(state, currentTopicItem);
             if (row && row.话题名称) {
                 saveState(state);
             }
@@ -609,7 +712,7 @@
                 }
                 // 话题之间保留轻微随机停顿，避免跳转过于机械
                 await sleepRange(TOPIC_JUMP_DELAY_MIN, TOPIC_JUMP_DELAY_MAX);
-                location.href = buildDetailUrl(state.topic.topics[state.topic.idx]);
+                location.href = buildDetailUrl(getTopicQueueItemName(state.topic.topics[state.topic.idx]));
             }
         } catch (e) {
             console.error('话题采集失败', e);
@@ -620,7 +723,7 @@
             saveState(state);
             if (state.topic.idx < state.topic.topics.length) {
                 await sleepRange(TOPIC_JUMP_DELAY_MIN, TOPIC_JUMP_DELAY_MAX);
-                location.href = buildDetailUrl(state.topic.topics[state.topic.idx]);
+                location.href = buildDetailUrl(getTopicQueueItemName(state.topic.topics[state.topic.idx]));
             } else {
                 state.topic.running = false;
                 saveState(state);
@@ -636,7 +739,8 @@
         saveState(state);
         const s = await scrollAndCollectTopics(state);
         if (s.topic.running && s.topic.topics.length > 0) {
-            location.href = buildDetailUrl(s.topic.topics[s.topic.idx] || s.topic.topics[0]);
+            const target = s.topic.topics[s.topic.idx] || s.topic.topics[0];
+            location.href = buildDetailUrl(getTopicQueueItemName(target));
         } else if (s.topic.topics.length === 0) {
             showToast('没找到话题');
             const latest = loadState();
@@ -659,7 +763,7 @@
                 showToast('话题采集已完成');
                 return;
             }
-            location.href = buildDetailUrl(state.topic.topics[state.topic.idx]);
+            location.href = buildDetailUrl(getTopicQueueItemName(state.topic.topics[state.topic.idx]));
             return;
         }
         if (isOnTargetUserPage()) {
@@ -1062,49 +1166,6 @@
         return m ? m[1] : '';
     }
 
-    function collectCctvVidsFromDom() {
-        const set = new Set();
-        const anchors = Array.from(document.querySelectorAll('a[href]'));
-        for (const a of anchors) {
-            const href = a.getAttribute('href') || '';
-            if (!/portrait_video\?vid=|video\?type=0&vid=/.test(href)) continue;
-            const vid = extractCctvVidFromLink(href);
-            if (vid) set.add(vid);
-        }
-        const items = Array.from(document.querySelectorAll('.p-user-list-item[data-trace]'));
-        for (const item of items) {
-            const trace = item.getAttribute('data-trace') || '';
-            const m = trace.match(/fval1:([a-zA-Z0-9]+)/);
-            if (m && m[1]) set.add(m[1]);
-        }
-        const imgs = Array.from(document.querySelectorAll('img[data-src], img[src]'));
-        for (const img of imgs) {
-            const src = img.getAttribute('data-src') || img.getAttribute('src') || '';
-            const m = src.match(/videoPic\/([a-zA-Z0-9]+)\//);
-            if (m && m[1]) set.add(m[1]);
-        }
-        return Array.from(set);
-    }
-
-    function collectCctvVidsFromHtml() {
-        const html = document.documentElement ? document.documentElement.innerHTML : '';
-        const re = /portrait_video\?vid=([a-zA-Z0-9]+)/g;
-        const set = new Set();
-        let m;
-        while ((m = re.exec(html)) !== null) {
-            if (m[1]) set.add(m[1]);
-        }
-        const reTrace = /fval1:([a-zA-Z0-9]+)/g;
-        while ((m = reTrace.exec(html)) !== null) {
-            if (m[1]) set.add(m[1]);
-        }
-        const rePic = /videoPic\/([a-zA-Z0-9]+)\//g;
-        while ((m = rePic.exec(html)) !== null) {
-            if (m[1]) set.add(m[1]);
-        }
-        return Array.from(set);
-    }
-
     function collectCctvVidsFromState() {
         const data = window.__STATE_user__ || readCctvStateFromScripts();
         const list = data?.payloads?.userShareData?.video_list
@@ -1115,10 +1176,6 @@
             const vid = item?.vid || extractCctvVidFromLink(item?.h5Link);
             if (vid) set.add(vid);
         }
-        const domVids = collectCctvVidsFromDom();
-        domVids.forEach(vid => set.add(vid));
-        const htmlVids = collectCctvVidsFromHtml();
-        htmlVids.forEach(vid => set.add(vid));
         return Array.from(set);
     }
 
@@ -1140,7 +1197,7 @@
         let rounds = 0;
 
         while (state.cctv.running) {
-            await waitFor(() => !!window.__STATE_user__, 8000);
+            await waitFor(() => !!(window.__STATE_user__ || readCctvStateFromScripts()), 8000);
             mergeCctvVids(state);
             saveState(state);
 
@@ -1180,6 +1237,38 @@
             playCount,
             likeCount
         };
+    }
+
+    function getCurrentCctvVid() {
+        try {
+            const vid = new URL(location.href).searchParams.get('vid');
+            return vid ? String(vid).trim() : '';
+        } catch (e) {
+            return extractCctvVidFromLink(location.href);
+        }
+    }
+
+    function upsertCctvResult(state, row) {
+        const rowVid = row['视频ID'] || '';
+        const rowLink = row['链接'] || '';
+        const index = state.cctv.results.findIndex((item) => (
+            item
+            && (
+                (rowVid && item['视频ID'] === rowVid)
+                || (rowLink && item['链接'] === rowLink)
+            )
+        ));
+        if (index >= 0) {
+            state.cctv.results[index] = {
+                ...state.cctv.results[index],
+                ...row
+            };
+        } else {
+            state.cctv.results.push(row);
+        }
+        state.cctv.results.forEach((item, idx) => {
+            item.序号 = idx + 1;
+        });
     }
 
     async function runCctvListStep() {
@@ -1223,6 +1312,18 @@
 
         state = loadState();
         if (!state.cctv.running) return;
+        const expectedVid = state.cctv.vids[state.cctv.idx] || '';
+        const currentVid = getCurrentCctvVid();
+        if (!expectedVid) {
+            state.cctv.running = false;
+            saveState(state);
+            location.href = CCTV_LIST_URL;
+            return;
+        }
+        if (currentVid !== expectedVid) {
+            location.href = buildCctvDetailUrl(expectedVid);
+            return;
+        }
 
         const info = parseCctvDetailInfo();
         const range = getCollectRange(state);
@@ -1239,13 +1340,14 @@
         }
 
         if (rangeStatus === 'within' && info.title) {
-            state.cctv.results.push({
+            upsertCctvResult(state, {
                 序号: state.cctv.results.length + 1,
                 标题: info.title,
-                链接: location.href,
+                链接: buildCctvDetailUrl(currentVid),
                 发布时间: info.date || '',
                 播放量: info.playCount,
-                点赞量: Number.isFinite(info.likeCount) ? info.likeCount : 0
+                点赞量: Number.isFinite(info.likeCount) ? info.likeCount : 0,
+                视频ID: currentVid
             });
         }
 
@@ -1375,6 +1477,14 @@
         return reindexResults(filtered);
     }
 
+    function filterTopicResultsByRange(results, range) {
+        const filtered = (results || []).filter((item) => {
+            const dt = parseDateTimeString(item['来源发布时间']);
+            return dt && isDateWithinRange(dt, range.start, range.end);
+        });
+        return reindexResults(filtered);
+    }
+
     function filterWechatResultsByRange(results, range) {
         const filtered = (results || []).filter((item) => {
             const timeStr = item['发布时间'] || '';
@@ -1494,10 +1604,11 @@
     function exportWorkbook() {
         const state = loadState();
         const range = getCollectRange(state);
+        const filteredTopic = filterTopicResultsByRange(state.topic.results, range);
         const filteredVideo = filterVideoResultsByRange(state.video.results, range);
         const filteredCctv = filterCctvResultsByRange(state.cctv.results, range);
         const filteredWechat = filterWechatResultsByRange(state.wechat.results, range);
-        const wb = buildWorkbookXlsx(state.topic.results, filteredVideo, filteredCctv, filteredWechat);
+        const wb = buildWorkbookXlsx(filteredTopic, filteredVideo, filteredCctv, filteredWechat);
         const data = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
         const blob = new Blob([data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
         const url = URL.createObjectURL(blob);
@@ -1768,7 +1879,7 @@
         saveState(state);
         scrollAndCollectTopics(state).then(s => {
             if (s.topic.running && s.topic.topics.length > 0) {
-                location.href = buildDetailUrl(s.topic.topics[0]);
+                location.href = buildDetailUrl(getTopicQueueItemName(s.topic.topics[0]));
             } else if (s.topic.topics.length === 0) {
                 showToast('没找到话题');
                 const latest = loadState();
