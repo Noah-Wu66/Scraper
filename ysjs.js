@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.20
+// @version      1.2.22
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（多Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -20,13 +20,14 @@
 
     const STORAGE_KEY = '__weibo_scraper_hub_v1';
     const SCROLL_WAIT_MS = 1800;
-    const TOPIC_JUMP_DELAY_MIN = 1200;
-    const TOPIC_JUMP_DELAY_MAX = 2600;
-    const TOPIC_BATCH_SIZE = 5;
-    const TOPIC_BATCH_REST_MIN = 8000;
-    const TOPIC_BATCH_REST_MAX = 15000;
-    const TOPIC_SCROLL_BREAK_REST_MIN = 6000;
-    const TOPIC_SCROLL_BREAK_REST_MAX = 10000;
+    const TOPIC_SCROLL_WAIT_MS = 900;
+    const TOPIC_JUMP_DELAY_MIN = 650;
+    const TOPIC_JUMP_DELAY_MAX = 1450;
+    const TOPIC_BATCH_SIZE = 8;
+    const TOPIC_BATCH_REST_MIN = 4000;
+    const TOPIC_BATCH_REST_MAX = 8000;
+    const TOPIC_SCROLL_BREAK_REST_MIN = 3000;
+    const TOPIC_SCROLL_BREAK_REST_MAX = 5500;
     const NO_NEW_RETRY_LIMIT = 6;
     const DEFAULT_COLLECT_RANGE_DAYS = 7;
     const DEFAULT_OVERVIEW_RANGE = '30d';
@@ -49,6 +50,19 @@
             window.scrollBy(0, step);
             await sleepRange(30, 90);
             if (Math.random() < 0.12) await sleepRange(120, 280);
+        }
+    }
+
+    async function topicScrollToBottom() {
+        const maxSteps = randInt(5, 9);
+        for (let i = 0; i < maxSteps; i++) {
+            const current = window.scrollY || window.pageYOffset || 0;
+            const bottom = document.body.scrollHeight - window.innerHeight;
+            if (current >= bottom - 8) break;
+            const step = randInt(320, 760);
+            window.scrollBy(0, step);
+            await sleepRange(18, 45);
+            if (Math.random() < 0.08) await sleepRange(80, 180);
         }
     }
 
@@ -392,14 +406,16 @@
         let lastHeight = 0;
         let noGrow = 0;
         let limitHitStreak = 0;
+        let knownTopics = new Set(state.topic.topics);
 
         while (state.topic.running) {
             await waitForAntiBotClear();
             const scan = findAllTopicsInPage(state);
             let addedThisRound = 0;
             for (const name of scan.topics) {
-                if (state.topic.topics.includes(name)) continue;
+                if (knownTopics.has(name)) continue;
                 state.topic.topics.push(name);
+                knownTopics.add(name);
                 addedThisRound += 1;
             }
             saveState(state);
@@ -428,17 +444,19 @@
                     if (diffDays >= 5) {
                         state.topic._pauseCheckpoint = oldest.getTime();
                         saveState(state);
-                        showToast('已翻过5天，休息6-10秒后继续');
+                        showToast('已翻过5天，休息3-5.5秒后继续');
                         await sleepRange(TOPIC_SCROLL_BREAK_REST_MIN, TOPIC_SCROLL_BREAK_REST_MAX);
                         state = loadState();
+                        knownTopics = new Set(state.topic.topics);
                         if (!state.topic.running) break;
                     }
                 }
             }
 
-            await humanScrollToBottom();
-            await sleepHumanLike(SCROLL_WAIT_MS, 700);
+            await topicScrollToBottom();
+            await sleepHumanLike(TOPIC_SCROLL_WAIT_MS, 350);
             state = loadState();
+            knownTopics = new Set(state.topic.topics);
         }
 
         return loadState();
@@ -563,7 +581,7 @@
             state = loadState();
             if (!state.topic.running) return;
             await ensureOverviewRangeSelected(state.overviewRange || DEFAULT_OVERVIEW_RANGE);
-            await sleepHumanLike(500, 300);
+            await sleepHumanLike(220, 140);
 
             state = loadState();
             if (!state.topic.running) return;
@@ -584,12 +602,12 @@
             } else {
                 // 每采集 TOPIC_BATCH_SIZE 个话题后长休息
                 if (state.topic.idx > 0 && state.topic.idx % TOPIC_BATCH_SIZE === 0) {
-                    showToast(`已采集${state.topic.idx}个话题，休息8-15秒防风控`);
+                    showToast(`已采集${state.topic.idx}个话题，休息4-8秒防风控`);
                     await sleepRange(TOPIC_BATCH_REST_MIN, TOPIC_BATCH_REST_MAX);
                     state = loadState();
                     if (!state.topic.running) return;
                 }
-                // 话题之间随机延迟1.2-2.6秒
+                // 话题之间保留轻微随机停顿，避免跳转过于机械
                 await sleepRange(TOPIC_JUMP_DELAY_MIN, TOPIC_JUMP_DELAY_MAX);
                 location.href = buildDetailUrl(state.topic.topics[state.topic.idx]);
             }
@@ -863,8 +881,8 @@
 
     async function collectVideoData(state) {
         const cards = document.querySelectorAll('.card9');
-        let belowStartCount = 0;
         let addedCount = 0;
+        let reachedStartBoundary = false;
         const existingLinks = new Set(state.video.results.map(r => r.链接));
         const range = getCollectRange(state);
 
@@ -879,7 +897,7 @@
 
             if (timeDate) {
                 if (timeDate < range.start) {
-                    belowStartCount += 1;
+                    reachedStartBoundary = true;
                     card.dataset.scraped = 'true';
                     continue;
                 }
@@ -931,23 +949,20 @@
         }
 
         return {
-            reachedLimitCandidate: belowStartCount >= 5 && addedCount === 0,
+            reachedStartBoundary,
             addedCount
         };
     }
 
     async function scrollAndCollectVideos() {
         let state = loadState();
-        let limitHitStreak = 0;
         while (state.video.running) {
             await waitForAntiBotClear();
             const scan = await collectVideoData(state);
             saveState(state);
 
-            if (scan.reachedLimitCandidate) limitHitStreak += 1;
-            else limitHitStreak = 0;
-            if (limitHitStreak >= 2) {
-                showToast('连续两轮超出时间范围，微博采集结束');
+            if (scan.reachedStartBoundary) {
+                showToast('已超过开始时间，微博采集结束');
                 break;
             }
 
