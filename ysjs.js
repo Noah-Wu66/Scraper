@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.24
+// @version      1.2.25
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（多Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -1274,6 +1274,11 @@
         }
     }
 
+    function isCctvMissingPage() {
+        const text = document.body ? (document.body.textContent || '') : '';
+        return /视频不见了|去看看其他的吧/.test(text);
+    }
+
     function upsertCctvResult(state, row) {
         const rowVid = row['视频ID'] || '';
         const rowLink = row['链接'] || '';
@@ -1295,6 +1300,20 @@
         state.cctv.results.forEach((item, idx) => {
             item.序号 = idx + 1;
         });
+    }
+
+    function skipCurrentCctvAndContinue(state, toastMsg) {
+        state.cctv.idx += 1;
+        saveState(state);
+        if (state.cctv.idx >= state.cctv.vids.length) {
+            state.cctv.running = false;
+            saveState(state);
+            showToast(`央视频采集完成：${state.cctv.results.length}条`);
+            location.href = CCTV_LIST_URL;
+            return;
+        }
+        if (toastMsg) showToast(toastMsg);
+        location.href = buildCctvDetailUrl(state.cctv.vids[state.cctv.idx]);
     }
 
     async function runCctvListStep() {
@@ -1331,6 +1350,7 @@
         if (!state.cctv.running || !isOnCctvDetailPage()) return;
 
         await waitFor(() => {
+            if (isCctvMissingPage()) return true;
             const t = document.querySelector('.video-main-l-title .title');
             const timeEl = document.querySelector('.video-main-l-time');
             return !!(t && t.textContent.trim() && timeEl);
@@ -1348,6 +1368,10 @@
         }
         if (currentVid !== expectedVid) {
             location.href = buildCctvDetailUrl(expectedVid);
+            return;
+        }
+        if (isCctvMissingPage()) {
+            skipCurrentCctvAndContinue(state, '视频不存在，已跳过');
             return;
         }
 
