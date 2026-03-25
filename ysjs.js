@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.27
+// @version      1.2.29
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（多Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -37,6 +37,8 @@
     const CCTV_LIST_URL = `https://w.yangshipin.cn/user?cpid=${CCTV_CPID}`;
     const CCTV_DETAIL_BASE = 'https://yangshipin.cn/video/home?vid=';
     const WEIBO_TEXT_CACHE = new Map();
+    const PANEL_Z_INDEX = 2147483647;
+    const OVERLAY_Z_INDEX = 2147483646;
 
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
     function randInt(min, max) { return min + Math.floor(Math.random() * (max - min + 1)); }
@@ -305,7 +307,7 @@
         root.style.cssText = [
             'position: fixed',
             'inset: 0',
-            'z-index: 2147483648',
+            `z-index: ${OVERLAY_Z_INDEX}`,
             'display: none',
             'align-items: center',
             'justify-content: center',
@@ -361,7 +363,7 @@
         meta.style.cssText = 'margin-top:14px;font-size:12px;line-height:1.6;color:#8ec5ff;';
 
         const note = document.createElement('div');
-        note.textContent = '页面变暗是正常现象。如遇验证码，请直接操作页面，脚本会自动继续。';
+        note.textContent = '页面变暗是正常现象，右上角面板仍可随时停止。';
         note.style.cssText = 'margin-top:12px;font-size:12px;line-height:1.7;color:rgba(255,255,255,0.58);';
 
         headerText.appendChild(badge);
@@ -406,14 +408,6 @@
     }
 
     function getBusyOverlayPayload(state) {
-        if (isVerificationVisible()) {
-            return {
-                task: state.video.running ? '微博数据' : state.topic.running ? '微博话题&热搜' : state.cctv.running ? '央视频数据' : '执行中',
-                action: '等待你完成安全验证',
-                detail: '请直接在页面上处理验证，处理完后脚本会自动继续。'
-            };
-        }
-
         if (state._pendingStart) {
             return {
                 task: getBusyTaskLabelByAction(state._pendingStart),
@@ -499,31 +493,6 @@
 
     function isOnTargetUserPage() {
         return location.hostname === 'm.weibo.cn' && location.pathname === `/u/${TARGET_UID}`;
-    }
-
-    function isVerificationVisible() {
-        const text = document.body ? document.body.textContent : '';
-        const textHit = /验证码|安全验证|安全校验|拖动滑块|请完成验证|访问过于频繁|操作频繁|请求过于频繁|访问异常|风险提示|账号异常/.test(text);
-        const elHit = document.querySelector(
-            '.geetest_holder,.geetest_panel,.yidun_panel,.yidun_popup,.captcha,[id*="captcha"],[class*="captcha"],iframe[src*="captcha"],iframe[src*="geetest"],iframe[src*="yidun"]'
-        );
-        return !!(textHit || elHit);
-    }
-
-    async function waitForAntiBotClear() {
-        if (!isVerificationVisible()) return;
-        const state = loadState();
-        showBusyOverlay(
-            state.video.running ? '微博数据' : state.topic.running ? '微博话题&热搜' : state.cctv.running ? '央视频数据' : '执行中',
-            '等待你完成安全验证',
-            '请直接在页面上完成验证，脚本会自动继续。'
-        );
-        showToast('检测到风控/验证，请手动处理，完成后自动继续');
-        while (isVerificationVisible()) {
-            await sleep(1000);
-        }
-        showToast('已通过验证，继续采集');
-        await sleep(600);
     }
 
     function sleepHumanLike(baseMs, jitterMs) {
@@ -695,7 +664,6 @@
         let knownTopics = new Set(state.topic.topics.map(item => getTopicQueueItemName(item)));
 
         while (state.topic.running) {
-            await waitForAntiBotClear();
             const scan = findAllTopicsInPage(state);
             let addedThisRound = 0;
             for (const item of scan.topics) {
@@ -889,7 +857,6 @@
         if (!state.topic.running || !isOnDetailPage()) return;
 
         try {
-            await waitForAntiBotClear();
             state = loadState();
             if (!state.topic.running) return;
             const expectedTopicItem = state.topic.topics[state.topic.idx];
@@ -1284,7 +1251,6 @@
     async function scrollAndCollectVideos() {
         let state = loadState();
         while (state.video.running) {
-            await waitForAntiBotClear();
             const scan = await collectVideoData(state);
             saveState(state);
 
@@ -1917,7 +1883,7 @@
             'position: fixed',
             'top: 15px',
             'right: 15px',
-            'z-index: 2147483647',
+            `z-index: ${PANEL_Z_INDEX}`,
             'background: rgba(255,255,255,0.96)',
             'border: 1px solid #ddd',
             'border-radius: 12px',
