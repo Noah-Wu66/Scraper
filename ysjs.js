@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.30
+// @version      1.2.31
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（多Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -578,6 +578,30 @@
         return oldest;
     }
 
+    function isCollectionPageActive() {
+        if (document.visibilityState && document.visibilityState !== 'visible') return false;
+        if (typeof document.hasFocus === 'function' && !document.hasFocus()) return false;
+        return true;
+    }
+
+    async function waitUntilCollectionPageActive(config) {
+        let pausedShown = false;
+        while (!isCollectionPageActive()) {
+            const state = loadState();
+            if (!state[config.stateKey].running) return state;
+            if (!pausedShown) {
+                showBusyOverlay(
+                    config.overlay.task,
+                    '页面不在前台，已暂停采集',
+                    '请回到这个采集页面，脚本会自动继续。'
+                );
+                pausedShown = true;
+            }
+            await sleep(1000);
+        }
+        return loadState();
+    }
+
     function createListProgressTracker() {
         return {
             lastSnapshot: '',
@@ -620,6 +644,12 @@
         let state = loadState();
         const runtime = typeof config.createRuntime === 'function' ? config.createRuntime(state) : {};
         while (state[config.stateKey].running) {
+            if (!isCollectionPageActive()) {
+                runtime.progressTracker = createListProgressTracker();
+                state = await waitUntilCollectionPageActive(config);
+                if (!state[config.stateKey].running) break;
+            }
+
             const scan = await config.scan(state, runtime);
             saveState(state);
 
@@ -1563,6 +1593,13 @@
         let rounds = 0;
 
         while (state.cctv.running) {
+            if (!isCollectionPageActive()) {
+                state = await waitUntilCollectionPageActive({
+                    stateKey: 'cctv',
+                    overlay: { task: '央视频数据' }
+                });
+                if (!state.cctv.running) break;
+            }
             await waitFor(() => !!(window.__STATE_user__ || readCctvStateFromScripts()), 8000);
             mergeCctvVids(state);
             saveState(state);
