@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.26
+// @version      1.2.27
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（多Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -280,6 +280,223 @@
         setTimeout(() => div.remove(), 2500);
     }
 
+    let busyOverlayRefs = null;
+
+    function ensureBusyOverlay() {
+        if (busyOverlayRefs && busyOverlayRefs.root && document.body.contains(busyOverlayRefs.root)) {
+            return busyOverlayRefs;
+        }
+
+        const styleId = 'weibo-scraper-busy-style';
+        if (!document.getElementById(styleId)) {
+            const style = document.createElement('style');
+            style.id = styleId;
+            style.textContent = `
+                @keyframes weibo-scraper-busy-spin {
+                    from { transform: rotate(0deg); }
+                    to { transform: rotate(360deg); }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        const root = document.createElement('div');
+        root.id = 'weibo-scraper-busy-overlay';
+        root.style.cssText = [
+            'position: fixed',
+            'inset: 0',
+            'z-index: 2147483648',
+            'display: none',
+            'align-items: center',
+            'justify-content: center',
+            'padding: 24px',
+            'background: rgba(7, 11, 18, 0.62)',
+            'backdrop-filter: blur(4px)',
+            'pointer-events: none'
+        ].join(';');
+
+        const card = document.createElement('div');
+        card.style.cssText = [
+            'width: min(460px, calc(100vw - 32px))',
+            'border-radius: 22px',
+            'padding: 22px 24px',
+            'background: linear-gradient(160deg, rgba(12, 18, 28, 0.96), rgba(20, 30, 46, 0.92))',
+            'border: 1px solid rgba(255,255,255,0.16)',
+            'box-shadow: 0 24px 70px rgba(0,0,0,0.4)',
+            'color: #eef4ff',
+            'font-family: Trebuchet MS, Microsoft YaHei, sans-serif'
+        ].join(';');
+
+        const header = document.createElement('div');
+        header.style.cssText = 'display:flex;align-items:center;gap:14px;margin-bottom:16px;';
+
+        const spinner = document.createElement('div');
+        spinner.style.cssText = [
+            'width: 18px',
+            'height: 18px',
+            'border-radius: 50%',
+            'border: 2px solid rgba(255,255,255,0.22)',
+            'border-top-color: #ff8a3d',
+            'animation: weibo-scraper-busy-spin 1s linear infinite',
+            'flex: 0 0 auto'
+        ].join(';');
+
+        const headerText = document.createElement('div');
+        headerText.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+
+        const badge = document.createElement('div');
+        badge.textContent = '执行中';
+        badge.style.cssText = 'font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#ffb277;';
+
+        const task = document.createElement('div');
+        task.style.cssText = 'font-size:24px;font-weight:700;line-height:1.2;';
+
+        const action = document.createElement('div');
+        action.style.cssText = 'font-size:15px;line-height:1.6;color:rgba(255,255,255,0.9);';
+
+        const detail = document.createElement('div');
+        detail.style.cssText = 'margin-top:10px;font-size:13px;line-height:1.7;color:rgba(255,255,255,0.72);';
+
+        const meta = document.createElement('div');
+        meta.style.cssText = 'margin-top:14px;font-size:12px;line-height:1.6;color:#8ec5ff;';
+
+        const note = document.createElement('div');
+        note.textContent = '页面变暗是正常现象。如遇验证码，请直接操作页面，脚本会自动继续。';
+        note.style.cssText = 'margin-top:12px;font-size:12px;line-height:1.7;color:rgba(255,255,255,0.58);';
+
+        headerText.appendChild(badge);
+        headerText.appendChild(task);
+        header.appendChild(spinner);
+        header.appendChild(headerText);
+        card.appendChild(header);
+        card.appendChild(action);
+        card.appendChild(detail);
+        card.appendChild(meta);
+        card.appendChild(note);
+        root.appendChild(card);
+        document.body.appendChild(root);
+
+        busyOverlayRefs = { root, task, action, detail, meta };
+        return busyOverlayRefs;
+    }
+
+    function getBusyTaskLabelByAction(action) {
+        if (action === 'video') return '微博数据';
+        if (action === 'topic') return '微博话题&热搜';
+        return '数据采集';
+    }
+
+    function buildBusyOverlayMeta(state) {
+        return `微博 ${state.video.results.length} 条 · 话题 ${state.topic.results.length} 条 · 央视频 ${state.cctv.results.length} 条`;
+    }
+
+    function showBusyOverlay(taskText, actionText, detailText) {
+        const refs = ensureBusyOverlay();
+        const state = loadState();
+        refs.task.textContent = taskText || '数据采集';
+        refs.action.textContent = actionText || '正在执行任务，请稍候';
+        refs.detail.textContent = detailText || '页面没有死机，脚本仍在继续执行。';
+        refs.meta.textContent = buildBusyOverlayMeta(state);
+        refs.root.style.display = 'flex';
+    }
+
+    function hideBusyOverlay() {
+        if (!busyOverlayRefs || !busyOverlayRefs.root) return;
+        busyOverlayRefs.root.style.display = 'none';
+    }
+
+    function getBusyOverlayPayload(state) {
+        if (isVerificationVisible()) {
+            return {
+                task: state.video.running ? '微博数据' : state.topic.running ? '微博话题&热搜' : state.cctv.running ? '央视频数据' : '执行中',
+                action: '等待你完成安全验证',
+                detail: '请直接在页面上处理验证，处理完后脚本会自动继续。'
+            };
+        }
+
+        if (state._pendingStart) {
+            return {
+                task: getBusyTaskLabelByAction(state._pendingStart),
+                action: '正在进入目标页面',
+                detail: '页面跳转完成后会自动开始采集。'
+            };
+        }
+
+        if (state.video.running) {
+            if (!isOnTargetUserPage()) {
+                return {
+                    task: '微博数据',
+                    action: '正在进入微博主页',
+                    detail: '准备开始采集微博内容。'
+                };
+            }
+            const cardCount = document.querySelectorAll('.card9').length;
+            return {
+                task: '微博数据',
+                action: cardCount ? '正在采集微博数据' : '正在等待微博内容加载',
+                detail: cardCount
+                    ? `当前页已加载 ${cardCount} 条微博卡片，脚本正在继续处理。`
+                    : '首次进入页面或首屏补全文时会稍慢一些。'
+            };
+        }
+
+        if (state.topic.running) {
+            if (isOnDetailPage()) {
+                return {
+                    task: '微博话题&热搜',
+                    action: '正在读取话题详情',
+                    detail: `当前进度 ${Math.min(state.topic.idx + 1, state.topic.topics.length || 1)}/${state.topic.topics.length || 0}。`
+                };
+            }
+            if (isOnTargetUserPage()) {
+                return {
+                    task: '微博话题&热搜',
+                    action: '正在扫描微博列表',
+                    detail: `已收集 ${state.topic.topics.length} 个话题候选，正在继续向下查找。`
+                };
+            }
+            return {
+                task: '微博话题&热搜',
+                action: '正在进入微博主页',
+                detail: '准备开始扫描话题和热搜数据。'
+            };
+        }
+
+        if (state.cctv.running) {
+            if (isOnCctvListPage()) {
+                return {
+                    task: '央视频数据',
+                    action: '正在收集视频列表',
+                    detail: `已发现 ${state.cctv.vids.length} 个视频候选，正在继续加载。`
+                };
+            }
+            if (isOnCctvDetailPage() || isOnCctvMissingRoute()) {
+                return {
+                    task: '央视频数据',
+                    action: '正在读取视频详情',
+                    detail: `当前进度 ${Math.min(state.cctv.idx + 1, state.cctv.vids.length || 1)}/${state.cctv.vids.length || 0}。`
+                };
+            }
+            return {
+                task: '央视频数据',
+                action: '正在进入央视频页面',
+                detail: '准备开始采集央视频数据。'
+            };
+        }
+
+        return null;
+    }
+
+    function syncBusyOverlay() {
+        const state = loadState();
+        const payload = getBusyOverlayPayload(state);
+        if (!payload) {
+            hideBusyOverlay();
+            return;
+        }
+        showBusyOverlay(payload.task, payload.action, payload.detail);
+    }
+
     function isOnTargetUserPage() {
         return location.hostname === 'm.weibo.cn' && location.pathname === `/u/${TARGET_UID}`;
     }
@@ -295,6 +512,12 @@
 
     async function waitForAntiBotClear() {
         if (!isVerificationVisible()) return;
+        const state = loadState();
+        showBusyOverlay(
+            state.video.running ? '微博数据' : state.topic.running ? '微博话题&热搜' : state.cctv.running ? '央视频数据' : '执行中',
+            '等待你完成安全验证',
+            '请直接在页面上完成验证，脚本会自动继续。'
+        );
         showToast('检测到风控/验证，请手动处理，完成后自动继续');
         while (isVerificationVisible()) {
             await sleep(1000);
@@ -1902,6 +2125,8 @@
             panelRefs.rangeEndInput.value = state.collectRangeEnd || buildDefaultCollectRange().endValue;
         }
 
+        syncBusyOverlay();
+
     }
 
 
@@ -1916,6 +2141,7 @@
         state._pendingStart = action; // 'topic' | 'video'
         bumpPendingStartToken(state);
         saveState(state);
+        showBusyOverlay(getBusyTaskLabelByAction(action), '正在进入目标页面', '页面跳转完成后会自动开始采集。');
         if (isOnTargetUserPage()) {
             location.reload();
         } else {
@@ -1932,14 +2158,17 @@
         state.topic.step = 'collecting';
         delete state.topic._pauseCheckpoint;
         saveState(state);
+        showBusyOverlay('微博话题&热搜', '正在开始采集', '正在准备扫描微博列表。');
         scrollAndCollectTopics(state).then(s => {
             if (s.topic.running && s.topic.topics.length > 0) {
+                showBusyOverlay('微博话题&热搜', '正在打开首个话题详情', '准备进入话题详情页继续采集。');
                 location.href = buildDetailUrl(getTopicQueueItemName(s.topic.topics[0]));
             } else if (s.topic.topics.length === 0) {
                 showToast('没找到话题');
                 const latest = loadState();
                 latest.topic.running = false;
                 saveState(latest);
+                hideBusyOverlay();
             }
         });
     }
@@ -1950,6 +2179,7 @@
         state.video.results = [];
         delete state.video._pauseCheckpoint;
         saveState(state);
+        showBusyOverlay('微博数据', '正在开始采集', '正在准备读取当前微博页面。');
         scrollAndCollectVideos();
     }
 
@@ -1960,6 +2190,7 @@
             state.topic.step = 'idle';
             saveState(state);
             showToast('已停止话题采集');
+            hideBusyOverlay();
             return;
         }
         queueStartAndGotoTop('topic');
@@ -1972,6 +2203,7 @@
             state.video.running = false;
             saveState(state);
             showToast('已停止微博采集');
+            hideBusyOverlay();
             return;
         }
         queueStartAndGotoTop('video');
@@ -1983,6 +2215,7 @@
             state.cctv.running = false;
             saveState(state);
             showToast('已停止央视频采集');
+            hideBusyOverlay();
             return;
         }
         state.cctv.running = true;
@@ -1991,6 +2224,7 @@
         state.cctv.vids = [];
         state.cctv.results = [];
         saveState(state);
+        showBusyOverlay('央视频数据', '正在开始采集', '正在准备进入央视频页面。');
         if (!isOnCctvListPage()) {
             location.href = CCTV_LIST_URL;
             return;
