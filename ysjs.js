@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.23
+// @version      1.2.24
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（多Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -1166,6 +1166,30 @@
         return m ? m[1] : '';
     }
 
+    function collectCctvVidsFromListDom() {
+        const set = new Set();
+        const items = Array.from(document.querySelectorAll('.p-user-list-item'));
+        for (const item of items) {
+            const trace = item.getAttribute('data-trace') || '';
+            const traceMatch = trace.match(/fval1:([a-zA-Z0-9]+)/);
+            if (traceMatch && traceMatch[1]) set.add(traceMatch[1]);
+
+            const anchors = Array.from(item.querySelectorAll('a[href]'));
+            for (const a of anchors) {
+                const vid = extractCctvVidFromLink(a.getAttribute('href') || '');
+                if (vid) set.add(vid);
+            }
+
+            const imgs = Array.from(item.querySelectorAll('img[data-src], img[src]'));
+            for (const img of imgs) {
+                const src = img.getAttribute('data-src') || img.getAttribute('src') || '';
+                const imgMatch = src.match(/videoPic\/([a-zA-Z0-9]+)\//);
+                if (imgMatch && imgMatch[1]) set.add(imgMatch[1]);
+            }
+        }
+        return Array.from(set);
+    }
+
     function collectCctvVidsFromState() {
         const data = window.__STATE_user__ || readCctvStateFromScripts();
         const list = data?.payloads?.userShareData?.video_list
@@ -1176,6 +1200,8 @@
             const vid = item?.vid || extractCctvVidFromLink(item?.h5Link);
             if (vid) set.add(vid);
         }
+        const domVids = collectCctvVidsFromListDom();
+        domVids.forEach(vid => set.add(vid));
         return Array.from(set);
     }
 
