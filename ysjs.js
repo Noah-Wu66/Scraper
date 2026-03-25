@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.25
+// @version      1.2.26
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（多Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -1133,6 +1133,10 @@
         return location.hostname === 'yangshipin.cn' && location.pathname.startsWith('/video/home');
     }
 
+    function isOnCctvMissingRoute() {
+        return location.hostname === 'yangshipin.cn' && location.pathname === '/no_video';
+    }
+
     function buildCctvDetailUrl(vid) {
         return `${CCTV_DETAIL_BASE}${vid}`;
     }
@@ -1275,6 +1279,7 @@
     }
 
     function isCctvMissingPage() {
+        if (isOnCctvMissingRoute()) return true;
         const text = document.body ? (document.body.textContent || '') : '';
         return /视频不见了|去看看其他的吧/.test(text);
     }
@@ -1347,7 +1352,7 @@
 
     async function runCctvDetailStep() {
         let state = loadState();
-        if (!state.cctv.running || !isOnCctvDetailPage()) return;
+        if (!state.cctv.running || (!isOnCctvDetailPage() && !isOnCctvMissingRoute())) return;
 
         await waitFor(() => {
             if (isCctvMissingPage()) return true;
@@ -1359,19 +1364,19 @@
         state = loadState();
         if (!state.cctv.running) return;
         const expectedVid = state.cctv.vids[state.cctv.idx] || '';
-        const currentVid = getCurrentCctvVid();
         if (!expectedVid) {
             state.cctv.running = false;
             saveState(state);
             location.href = CCTV_LIST_URL;
             return;
         }
-        if (currentVid !== expectedVid) {
-            location.href = buildCctvDetailUrl(expectedVid);
-            return;
-        }
         if (isCctvMissingPage()) {
             skipCurrentCctvAndContinue(state, '视频不存在，已跳过');
+            return;
+        }
+        const currentVid = getCurrentCctvVid();
+        if (currentVid !== expectedVid) {
+            location.href = buildCctvDetailUrl(expectedVid);
             return;
         }
 
@@ -2038,7 +2043,7 @@
     if (isOnCctvListPage()) {
         runCctvListStep();
     }
-    if (isOnCctvDetailPage()) {
+    if (isOnCctvDetailPage() || isOnCctvMissingRoute()) {
         runCctvDetailStep();
     }
 })();
