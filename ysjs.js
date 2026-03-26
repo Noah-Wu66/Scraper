@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      1.2.31
+// @version      1.2.32
 // @description  话题30天数据 + 用户微博数据，统一面板导出表格（多Sheet）
 // @author       Your Name
 // @match        https://m.weibo.cn/*
@@ -1976,7 +1976,7 @@
 
         const videoRows = (videoResults || []).map((item) => (
             videoHeaders.map((h) => {
-                const val = item[h] || '';
+                const val = item[h] ?? '';
                 return (typeof val === 'number' && Number.isFinite(val)) ? val : String(val);
             })
         ));
